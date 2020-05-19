@@ -1,12 +1,16 @@
 import argparse
 import sys
+import os
 
 import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
 
 plt.switch_backend('agg')
 
-sys.path.append('../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
+sys.path.insert(0, '../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
+sys.path.insert(0, '../eval') 
+sys.path.insert(0, '../backbone') 
+
 from dataset_3d import *
 from model_3d import *
 from resnet_2d3d import neq_load_customized
@@ -151,6 +155,7 @@ def main():
             Normalize()
         ])
 
+
     train_loader = get_data(transform, 'train')
     val_loader = get_data(transform, 'val')
 
@@ -288,6 +293,7 @@ def validate(data_loader, model, epoch):
             # [B, P, SQ, B, N, SQ]
             score_flattened = score_.view(B * NP * SQ, B2 * NS * SQ)
             target_flattened = target_.view(B * NP * SQ, B2 * NS * SQ)
+            target_flattened = target_flattened.double()
             target_flattened = target_flattened.argmax(dim=1)
 
             loss = criterion(score_flattened, target_flattened)
@@ -327,7 +333,9 @@ def get_data(transform, mode='train'):
                              transform=transform,
                              seq_len=args.seq_len,
                              num_seq=args.num_seq,
-                             downsample=5)
+                             downsample=5,  
+                             train_csv=args.train_csv,
+                             val_csv=args.test_csv)
     else:
         raise ValueError('dataset not supported')
 

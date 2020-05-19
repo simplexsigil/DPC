@@ -274,6 +274,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
             vpath, vlen = row
             if vlen - self.num_seq * self.seq_len * self.downsample <= 0:
                 drop_idx.append(idx)
+
+        print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx), len(video_info), self.num_seq * self.seq_len * self.downsample))
         self.video_info = video_info.drop(drop_idx, axis=0)
 
         # For some reason, the original approach also samples only 30 % of the validation set.
