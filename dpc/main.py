@@ -333,7 +333,7 @@ def get_data(transform, mode='train'):
                              transform=transform,
                              seq_len=args.seq_len,
                              num_seq=args.num_seq,
-                             downsample=5,  
+                             downsample=args.ds,  
                              train_csv=args.train_csv,
                              val_csv=args.test_csv)
     else:
