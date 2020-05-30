@@ -24,7 +24,7 @@ from torchvision import transforms
 import torchvision.utils as vutils
 
 # This way, cuda optimizes for the hardware available, if input size is always equal.
-torch.backends.cudnn.benchmark = True
+# torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
@@ -41,7 +41,7 @@ parser.add_argument('--resume', default='', type=str, help='path of model to res
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
 parser.add_argument('--epochs', default=10, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--gpu', default='0,1', type=str)
+parser.add_argument('--gpu', default=[0,2], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
@@ -60,10 +60,23 @@ def main():
     np.random.seed(0)
     global args;
     args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
+    
+    
+    print ('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
+    print ('Available device count: {}'.format(torch.cuda.device_count()))
+
+    args.gpu = list(range(torch.cuda.device_count()))  # Really weird: In Pytorch 1.2, the device ids start from 0 on the visible devices.
+
+    print("Note: At least in Pytorch 1.2, device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
+
+    for i in args.gpu:
+        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
+    print("Cuda is available: {}".format(torch.cuda.is_available()))
     global cuda;
     cuda = torch.device('cuda')
-
+    
     ### dpc model ###
     if args.model == 'dpc-rnn':
         model = DPC_RNN(sample_size=args.img_dim,
