@@ -8,8 +8,8 @@ from tensorboardX import SummaryWriter
 plt.switch_backend('agg')
 
 sys.path.insert(0, '../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
-sys.path.insert(0, '../eval') 
-sys.path.insert(0, '../backbone') 
+sys.path.insert(0, '../eval')
+sys.path.insert(0, '../backbone')
 
 from dataset_3d import *
 from model_3d import *
@@ -31,10 +31,10 @@ parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='dpc-rnn', type=str)
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=8, type=int, help='number of video blocks')
-parser.add_argument('--pred_step', default=3, type=int)
-parser.add_argument('--ds', default=3, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=4, type=int)
+parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
+parser.add_argument('--pred_step', default=2, type=int)
+parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
+parser.add_argument('--batch_size', default=96, type=int)
 parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -107,6 +107,7 @@ def main():
             args.start_epoch = checkpoint['epoch']
             iteration = checkpoint['iteration']
             best_acc = checkpoint['best_acc']
+            # I assume this copies the *cpu located* parameters to the CUDA model automatically?
             model.load_state_dict(checkpoint['state_dict'])
             if not args.reset_lr:  # if didn't reset lr, load old optimizer
                 optimizer.load_state_dict(checkpoint['optimizer'])
@@ -226,7 +227,7 @@ def train(data_loader, model, optimizer, epoch):
         B = input_seq.size(0)
         [score_, mask_] = model(input_seq)
         # visualize
-        if (iteration == 0) or (iteration == args.print_freq):
+        if (iteration == 0) or (iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
             if B > 2: input_seq = input_seq[0:2, :]
             writer_train.add_image('input_seq',
                                    de_normalize(vutils.make_grid(
@@ -235,8 +236,10 @@ def train(data_loader, model, optimizer, epoch):
                                    iteration)
         del input_seq
 
-        if idx == 0: target_, (_, B2, NS, NP, SQ) = process_output(mask_)
+        if idx == 0:
+            target_, (_, B2, NS, NP, SQ) = process_output(mask_)
 
+        # TODO: adapt logic for two stream network.
         # score is a 6d tensor: [B, P, SQ, B, N, SQ]
         score_flattened = score_.view(B * NP * SQ, B2 * NS * SQ)
         target_flattened = target_.view(B * NP * SQ, B2 * NS * SQ)
@@ -333,7 +336,7 @@ def get_data(transform, mode='train'):
                              transform=transform,
                              seq_len=args.seq_len,
                              num_seq=args.num_seq,
-                             downsample=args.ds,  
+                             downsample=args.ds,
                              train_csv=args.train_csv,
                              val_csv=args.test_csv)
     else:
