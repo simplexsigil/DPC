@@ -16,28 +16,51 @@ def extract_video_opencv(v_path, f_root, dim=240):
     v_class = v_path.split('/')[-2]
     v_name = os.path.basename(v_path)[0:-4]
     out_dir = os.path.join(f_root, v_class, v_name)
+
+    preexisted = True
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
+        preexisted = False
 
     vidcap = cv2.VideoCapture(v_path)
+
+    if not vidcap.isOpened():
+        print("Vidcap had to be manually opened for {}".format(v_name))
+        vidcap.open()
+
     nb_frames = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if preexisted is True:
+        imgs = glob.glob(os.path.join(out_dir, '*.jpg'))
+        if abs(len(imgs) - nb_frames) < 2:
+            print("Skipping extracted video {}".format(v_name))
+            vidcap.release()
+            return
+
     width = vidcap.get(cv2.CAP_PROP_FRAME_WIDTH)  # float
     height = vidcap.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float
+
     if (width == 0) or (height == 0):
         print(v_path, 'not successfully loaded, drop ..');
         return
+
     new_dim = resize_dim(width, height, dim)
 
+    count = 0
     success, image = vidcap.read()
-    count = 1
+
     while success:
+        count += 1
         image = cv2.resize(image, new_dim, interpolation=cv2.INTER_LINEAR)
         cv2.imwrite(os.path.join(out_dir, 'image_%05d.jpg' % count), image,
                     [cv2.IMWRITE_JPEG_QUALITY, 80])  # quality from 0-100, 95 is default, high is good
         success, image = vidcap.read()
-        count += 1
-    if nb_frames > count:
-        print('/'.join(out_dir.split('/')[-2::]), 'NOT extracted successfully: %df/%df' % (count, nb_frames))
+
+    # It is expected behaviour that cv2.CAP_PROP_FRAME_COUNT can be an estimation based on FPS and be off by a frame.
+    if abs(nb_frames - count) > 1:
+        print('/'.join(out_dir.split('/')[-2::]), ' The number of extracted frames differs from the expected number: '
+                                                  '%df/%df' % (count, nb_frames))
+
     vidcap.release()
 
 
@@ -124,27 +147,28 @@ def main_nturgbd(v_root, f_root, dim=150):
     # files = list(zip([fid_p.match(file).group() for file in files], files))  # [(file_id, filename),...]
 
     v_count = len(v_paths)
-    v_pathss = [v_paths[int(v_count/100)*i:int(v_count/100)*(i+1)] for i in range(100)]
+    v_pathss = [v_paths[int(v_count / 100) * i:int(v_count / 100) * (i + 1)] for i in range(100)]
 
     for i, v_paths in tqdm(enumerate(v_pathss), total=len(v_pathss)):
-        Parallel(n_jobs=32)(delayed(extract_video_opencv)(v_path, f_root, dim=dim) for v_path in tqdm(v_paths, total=len(v_paths)))
+        Parallel(n_jobs=32)(
+            delayed(extract_video_opencv)(v_path, f_root, dim=dim) for v_path in tqdm(v_paths, total=len(v_paths)))
 
 
 if __name__ == '__main__':
     # v_root is the video source path, f_root is where to store frames
     # edit 'your_path' here: 
 
-    main_nturgbd(v_root=os.path.expanduser('~/datasets/nturgbd/rgb'),
-                 f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame'))
+    # main_nturgbd(v_root=os.path.expanduser('~/datasets/nturgbd/rgb'),
+    #              f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame'))
 
-    # main_UCF101(v_root='your_path/UCF101/videos',
-    #             f_root='your_path/UCF101/frame')
+    main_UCF101(v_root=os.path.expanduser('~/datasets/UCF101/UCF-101'),
+                f_root='/media/david/TOSHIBA EXT/datasets/UCF101/dpc_converted/frame')
 
-    # main_HMDB51(v_root='your_path/HMDB51/videos',
-    #             f_root='your_path/HMDB51/frame')
+    # main_HMDB51(v_root=os.path.expanduser('~/datasets/HMDB51/hmdb51'),
+    #             f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'))
 
-    # main_kinetics400(v_root='your_path/Kinetics400/videos',
-    #                  f_root='your_path/Kinetics400/frame', dim=150)
+# main_kinetics400(v_root='your_path/Kinetics400/videos',
+#                  f_root='your_path/Kinetics400/frame', dim=150)
 
-    # main_kinetics400(v_root='your_path/Kinetics400_256/videos',
-    #                  f_root='your_path/Kinetics400_256/frame', dim=256)
+# main_kinetics400(v_root='your_path/Kinetics400_256/videos',
+#                  f_root='your_path/Kinetics400_256/frame', dim=256)

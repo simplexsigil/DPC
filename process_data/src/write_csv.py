@@ -1,8 +1,10 @@
 import csv
 import glob
 import os
+import pandas as pd
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from joblib import Parallel, delayed
 
 
 def write_list(data_list, path, ):
@@ -66,7 +68,7 @@ def get_split(root, split_path, mode):
     split_list = []
     split_content = pd.read_csv(split_path).iloc[:, 0:4]
     split_list = Parallel(n_jobs=64) \
-        (delayed(check_exists)(row, root) \
+(delayed(check_exists)(row, root) \
          for i, row in tqdm(split_content.iterrows(), total=len(split_content)))
     return split_list
 
@@ -141,11 +143,12 @@ if __name__ == '__main__':
     # main_UCF101(f_root='your_path/UCF101/frame',
     #             splits_root='your_path/UCF101/splits_classification')
 
-    main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
-                 csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
+    # main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
+    #              csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
 
-    # main_HMDB51(f_root='your_path/HMDB51/frame',
-    #             splits_root='your_path/HMDB51/split/testTrainMulti_7030_splits')
+    main_HMDB51(f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'),
+                splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
+                csv_root=os.path.expanduser('~/datasets/HMDB51/split'))
 
     # main_Kinetics400(mode='train', # train or val or test
     #                  k400_path='your_path/Kinetics',
