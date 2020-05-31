@@ -25,13 +25,13 @@ import torchvision.utils as vutils
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='lc', type=str)
-parser.add_argument('--dataset', default='ucf101', type=str)
+parser.add_argument('--dataset', default='hmdb51', type=str)
 parser.add_argument('--split', default=1, type=int)
 parser.add_argument('--seq_len', default=5, type=int)
-parser.add_argument('--num_seq', default=8, type=int)
-parser.add_argument('--num_class', default=101, type=int)
+parser.add_argument('--num_seq', default=6, type=int)
+parser.add_argument('--num_class', default=51, type=int)
 parser.add_argument('--dropout', default=0.5, type=float)
-parser.add_argument('--ds', default=3, type=int)
+parser.add_argument('--ds', default=1, type=int)
 parser.add_argument('--batch_size', default=4, type=int)
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
@@ -40,7 +40,7 @@ parser.add_argument('--pretrain', default='random', type=str)
 parser.add_argument('--test', default='', type=str)
 parser.add_argument('--epochs', default=10, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--gpu', default='0,1', type=str)
+parser.add_argument('--gpu', default=[0, 2], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int)
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--train_what', default='last', type=str, help='Train what parameters?')
@@ -50,7 +50,23 @@ parser.add_argument('--img_dim', default=128, type=int)
 
 def main():
     global args; args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
+    os.environ[
+        "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
+
+    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
+    print('Available device count: {}'.format(torch.cuda.device_count()))
+
+    args.gpu = list(range(
+        torch.cuda.device_count()))  # Really weird: In Pytorch 1.2, the device ids start from 0 on the visible devices.
+
+    print(
+        "Note: At least in Pytorch 1.2, device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
+
+    for i in args.gpu:
+        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
+    print("Cuda is available: {}".format(torch.cuda.is_available()))
+
     global cuda; cuda = torch.device('cuda')
 
     if args.dataset == 'ucf101': args.num_class = 101

@@ -168,10 +168,10 @@ class HMDB51_3d(data.Dataset):
 
         # splits
         if mode == 'train':
-            split = '../process_data/data/hmdb51/train_split%02d.csv' % self.which_split
+            split = os.path.expanduser('~/datasets/HMDB51/split/train_split%02d.csv' % self.which_split)
             video_info = pd.read_csv(split, header=None)
         elif (mode == 'val') or (mode == 'test'):
-            split = '../process_data/data/hmdb51/test_split%02d.csv' % self.which_split # use test for val, temporary
+            split = os.path.expanduser('~/datasets/HMDB51/split/test_split%02d.csv' % self.which_split) # use test for val, temporary
             video_info = pd.read_csv(split, header=None)
         else: raise ValueError('wrong mode')
 
@@ -179,7 +179,7 @@ class HMDB51_3d(data.Dataset):
         self.action_dict_encode = {}
         self.action_dict_decode = {}
 
-        action_file = os.path.join('../process_data/data/hmdb51', 'classInd.txt')
+        action_file = os.path.join(os.path.expanduser('~/datasets/HMDB51/'), 'classInd.txt')
         action_df = pd.read_csv(action_file, sep=' ', header=None)
         for _, row in action_df.iterrows():
             act_id, act_name = row
