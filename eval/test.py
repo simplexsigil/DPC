@@ -414,7 +414,7 @@ lr{1}_wd{args.wd}_ds{args.ds}_seq{args.num_seq}_len{args.seq_len}_\
 dp{args.dropout}_train-{args.train_what}{2}'.format(
                     'r%s' % args.net[6::], \
                     args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt=' + 'pretrained_net' if args.pretrain else 'untrained_net', \
+                    '_pt=' + 'pretrained_net' if args.pretrain != "random" else 'untrained_net', \
                     args=args)
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
