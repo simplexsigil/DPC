@@ -7,8 +7,8 @@ import numpy as np
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 
-sys.path.append('../utils')
-sys.path.append('../backbone')
+sys.path.insert(0, '../utils')
+sys.path.insert(0, '../backbone')
 from dataset_3d_lc import UCF101_3d, HMDB51_3d
 from model_3d_lc import *
 from resnet_2d3d import neq_load_customized
@@ -18,7 +18,7 @@ from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc
 import torch
 import torch.optim as optim
 from torch.utils import data
-import torch.nn as nn  
+import torch.nn as nn
 from torchvision import datasets, models, transforms
 import torchvision.utils as vutils
 
@@ -144,7 +144,8 @@ def main():
         test_loss, test_acc = test(test_loader, model)
         sys.exit()
     else: # not test
-        torch.backends.cudnn.benchmark = True
+        pass
+        #torch.backends.cudnn.benchmark = True
 
     if args.resume:
         if os.path.isfile(args.resume):
@@ -413,7 +414,7 @@ lr{1}_wd{args.wd}_ds{args.ds}_seq{args.num_seq}_len{args.seq_len}_\
 dp{args.dropout}_train-{args.train_what}{2}'.format(
                     'r%s' % args.net[6::], \
                     args.old_lr if args.old_lr is not None else args.lr, \
-                    '_pt='+args.pretrain.replace('/','-') if args.pretrain else '', \
+                    '_pt=' + 'pretrained_net' if args.pretrain else 'untrained_net', \
                     args=args)
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')

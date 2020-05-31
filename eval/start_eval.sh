@@ -1,1 +1,0 @@
-python3 test.py --seq_len 5 --num_seq 6 --ds 1 --batch_size 96 --gpu 0 --gpu 3 --pretrain "../dpc/log_tmp/pre_training_nturgbd/nturgbd-128_r18_dpc-rnn_bs96_lr0.001_seq6_pred2_len5_ds1_train-all/nturgbd-128_r18_dpc-rnn_bs96_lr0.001_seq6_pred2_len5_ds1_train-all/model/model_best_epoch85.pth.tar"
