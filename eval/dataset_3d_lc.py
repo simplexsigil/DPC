@@ -1,31 +1,26 @@
+import sys
+
+import os
+import pandas as pd
 import torch
 from torch.utils import data
-from torchvision import transforms
-import os
-import sys
-import time
-import pickle
-import csv
-import glob
-import pandas as pd
-import numpy as np
-import cv2
+
 sys.path.append('../utils')
 from augmentation import *
-from tqdm import tqdm
-from joblib import Parallel, delayed
+
 
 def pil_loader(path):
     with open(path, 'rb') as f:
         with Image.open(f) as img:
             return img.convert('RGB')
 
+
 class UCF101_3d(data.Dataset):
     def __init__(self,
                  mode='train',
                  transform=None,
                  seq_len=10,
-                 num_seq =1,
+                 num_seq=1,
                  downsample=3,
                  epsilon=5,
                  which_split=1):
@@ -42,7 +37,7 @@ class UCF101_3d(data.Dataset):
             split = '../process_data/data/ucf101/train_split%02d.csv' % self.which_split
             video_info = pd.read_csv(split, header=None)
         elif (mode == 'val') or (mode == 'test'):
-            split = '../process_data/data/ucf101/test_split%02d.csv' % self.which_split # use test for val, temporary
+            split = '../process_data/data/ucf101/test_split%02d.csv' % self.which_split  # use test for val, temporary
             video_info = pd.read_csv(split, header=None)
         else: raise ValueError('wrong mode')
 
@@ -54,7 +49,7 @@ class UCF101_3d(data.Dataset):
         action_df = pd.read_csv(action_file, sep=' ', header=None)
         for _, row in action_df.iterrows():
             act_id, act_name = row
-            act_id = int(act_id) - 1 # let id start from 0
+            act_id = int(act_id) - 1  # let id start from 0
             self.action_dict_decode[act_id] = act_name
             self.action_dict_encode[act_name] = act_id
 
@@ -62,8 +57,13 @@ class UCF101_3d(data.Dataset):
         drop_idx = []
         for idx, row in video_info.iterrows():
             vpath, vlen = row
-            if vlen-self.num_seq*self.seq_len*self.downsample <= 0:
+            if vlen - self.num_seq * self.seq_len * self.downsample <= 0:
                 drop_idx.append(idx)
+
+        print("In mode {mod}, {dr} of {tot} videos had to be dropped (too short).\n"
+              "Remaining dataset size in mode {mod}: {re}".format(tot=len(video_info), mod=self.mode, dr=len(drop_idx),
+                                                                  re=len(video_info) - len(drop_idx)))
+
         self.video_info = video_info.drop(drop_idx, axis=0)
 
         if mode == 'val': self.video_info = self.video_info.sample(frac=0.3)
@@ -71,16 +71,15 @@ class UCF101_3d(data.Dataset):
 
     def idx_sampler(self, vlen, vpath):
         '''sample index from a video'''
-        if vlen-self.num_seq*self.seq_len*self.downsample <= 0: return [None]
+        if vlen - self.num_seq * self.seq_len * self.downsample <= 0: return [None]
         n = 1
         if self.mode == 'test':
-            seq_idx_block = np.arange(0, vlen, self.downsample) # all possible frames with downsampling
+            seq_idx_block = np.arange(0, vlen, self.downsample)  # all possible frames with downsampling
             return [seq_idx_block, vpath]
-        start_idx = np.random.choice(range(vlen-self.num_seq*self.seq_len*self.downsample), n)
-        seq_idx = np.expand_dims(np.arange(self.num_seq), -1)*self.downsample*self.seq_len + start_idx
-        seq_idx_block = seq_idx + np.expand_dims(np.arange(self.seq_len),0)*self.downsample
+        start_idx = np.random.choice(range(vlen - self.num_seq * self.seq_len * self.downsample), n)
+        seq_idx = np.expand_dims(np.arange(self.num_seq), -1) * self.downsample * self.seq_len + start_idx
+        seq_idx_block = seq_idx + np.expand_dims(np.arange(self.seq_len), 0) * self.downsample
         return [seq_idx_block, vpath]
-
 
     def __getitem__(self, index):
         vpath, vlen = self.video_info.iloc[index]
@@ -90,10 +89,10 @@ class UCF101_3d(data.Dataset):
         idx_block, vpath = items
         if self.mode != 'test':
             assert idx_block.shape == (self.num_seq, self.seq_len)
-            idx_block = idx_block.reshape(self.num_seq*self.seq_len)
+            idx_block = idx_block.reshape(self.num_seq * self.seq_len)
 
-        seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i+1))) for i in idx_block]
-        t_seq = self.transform(seq) # apply same transform
+        seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in idx_block]
+        t_seq = self.transform(seq)  # apply same transform
 
         num_crop = None
         try:
@@ -109,22 +108,25 @@ class UCF101_3d(data.Dataset):
         if self.mode == 'test':
             # return all available clips, but cut into length = num_seq
             SL = t_seq.size(0)
-            clips = []; i = 0
-            while i+self.seq_len <= SL:
-                clips.append(t_seq[i:i+self.seq_len, :])
+            clips = [];
+            i = 0
+            while i + self.seq_len <= SL:
+                clips.append(t_seq[i:i + self.seq_len, :])
                 # i += self.seq_len//2
                 i += self.seq_len
             if num_crop:
                 # half overlap:
-                clips = [torch.stack(clips[i:i+self.num_seq], 0).permute(2,0,3,1,4,5) for i in range(0,len(clips)+1-self.num_seq,self.num_seq//2)]
+                clips = [torch.stack(clips[i:i + self.num_seq], 0).permute(2, 0, 3, 1, 4, 5) for i in
+                         range(0, len(clips) + 1 - self.num_seq, self.num_seq // 2)]
                 NC = len(clips)
-                t_seq = torch.stack(clips, 0).view(NC*num_crop, self.num_seq, C, self.seq_len, H, W)
+                t_seq = torch.stack(clips, 0).view(NC * num_crop, self.num_seq, C, self.seq_len, H, W)
             else:
                 # half overlap:
-                clips = [torch.stack(clips[i:i+self.num_seq], 0).transpose(1,2) for i in range(0,len(clips)+1-self.num_seq,self.num_seq//2)]
+                clips = [torch.stack(clips[i:i + self.num_seq], 0).transpose(1, 2) for i in
+                         range(0, len(clips) + 1 - self.num_seq, self.num_seq // 2)]
                 t_seq = torch.stack(clips, 0)
         else:
-            t_seq = t_seq.view(self.num_seq, self.seq_len, C, H, W).transpose(1,2)
+            t_seq = t_seq.view(self.num_seq, self.seq_len, C, H, W).transpose(1, 2)
 
         try:
             vname = vpath.split('/')[-3]
@@ -171,7 +173,8 @@ class HMDB51_3d(data.Dataset):
             split = os.path.expanduser('~/datasets/HMDB51/split/train_split%02d.csv' % self.which_split)
             video_info = pd.read_csv(split, header=None)
         elif (mode == 'val') or (mode == 'test'):
-            split = os.path.expanduser('~/datasets/HMDB51/split/test_split%02d.csv' % self.which_split) # use test for val, temporary
+            split = os.path.expanduser(
+                '~/datasets/HMDB51/split/test_split%02d.csv' % self.which_split)  # use test for val, temporary
             video_info = pd.read_csv(split, header=None)
         else: raise ValueError('wrong mode')
 
@@ -183,7 +186,7 @@ class HMDB51_3d(data.Dataset):
         action_df = pd.read_csv(action_file, sep=' ', header=None)
         for _, row in action_df.iterrows():
             act_id, act_name = row
-            act_id = int(act_id) - 1 # let id start from 0
+            act_id = int(act_id) - 1  # let id start from 0
             self.action_dict_decode[act_id] = act_name
             self.action_dict_encode[act_name] = act_id
 
@@ -191,8 +194,13 @@ class HMDB51_3d(data.Dataset):
         drop_idx = []
         for idx, row in video_info.iterrows():
             vpath, vlen = row
-            if vlen-self.num_seq*self.seq_len*self.downsample <= 0:
+            if vlen - self.num_seq * self.seq_len * self.downsample <= 0:
                 drop_idx.append(idx)
+
+        print("In mode {mod}, {dr} of {tot} videos had to be dropped (too short).\n"
+              "Remaining dataset size in mode {mod}: {re}".format(tot=len(video_info), mod=self.mode, dr=len(drop_idx),
+                                                                  re=len(video_info) - len(drop_idx)))
+
         self.video_info = video_info.drop(drop_idx, axis=0)
 
         if mode == 'val': self.video_info = self.video_info.sample(frac=0.3)
@@ -200,16 +208,15 @@ class HMDB51_3d(data.Dataset):
 
     def idx_sampler(self, vlen, vpath):
         '''sample index from a video'''
-        if vlen-self.num_seq*self.seq_len*self.downsample <= 0: return [None]
+        if vlen - self.num_seq * self.seq_len * self.downsample <= 0: return [None]
         n = 1
         if self.mode == 'test':
-            seq_idx_block = np.arange(0, vlen, self.downsample) # all possible frames with downsampling
+            seq_idx_block = np.arange(0, vlen, self.downsample)  # all possible frames with downsampling
             return [seq_idx_block, vpath]
-        start_idx = np.random.choice(range(vlen-self.num_seq*self.seq_len*self.downsample), n)
-        seq_idx = np.expand_dims(np.arange(self.num_seq), -1)*self.downsample*self.seq_len + start_idx
-        seq_idx_block = seq_idx + np.expand_dims(np.arange(self.seq_len),0)*self.downsample
+        start_idx = np.random.choice(range(vlen - self.num_seq * self.seq_len * self.downsample), n)
+        seq_idx = np.expand_dims(np.arange(self.num_seq), -1) * self.downsample * self.seq_len + start_idx
+        seq_idx_block = seq_idx + np.expand_dims(np.arange(self.seq_len), 0) * self.downsample
         return [seq_idx_block, vpath]
-
 
     def __getitem__(self, index):
         vpath, vlen = self.video_info.iloc[index]
@@ -219,10 +226,10 @@ class HMDB51_3d(data.Dataset):
         idx_block, vpath = items
         if self.mode != 'test':
             assert idx_block.shape == (self.num_seq, self.seq_len)
-            idx_block = idx_block.reshape(self.num_seq*self.seq_len)
+            idx_block = idx_block.reshape(self.num_seq * self.seq_len)
 
-        seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i+1))) for i in idx_block]
-        t_seq = self.transform(seq) # apply same transform
+        seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in idx_block]
+        t_seq = self.transform(seq)  # apply same transform
 
         num_crop = None
         try:
@@ -239,22 +246,25 @@ class HMDB51_3d(data.Dataset):
         if self.mode == 'test':
             # return all available clips, but cut into length = num_seq
             SL = t_seq.size(0)
-            clips = []; i = 0
-            while i+self.seq_len <= SL:
-                clips.append(t_seq[i:i+self.seq_len, :])
+            clips = [];
+            i = 0
+            while i + self.seq_len <= SL:
+                clips.append(t_seq[i:i + self.seq_len, :])
                 # i += self.seq_len//2
                 i += self.seq_len
             if num_crop:
                 # half overlap:
-                clips = [torch.stack(clips[i:i+self.num_seq], 0).permute(2,0,3,1,4,5) for i in range(0,len(clips)+1-self.num_seq,self.num_seq//2)]
+                clips = [torch.stack(clips[i:i + self.num_seq], 0).permute(2, 0, 3, 1, 4, 5) for i in
+                         range(0, len(clips) + 1 - self.num_seq, self.num_seq // 2)]
                 NC = len(clips)
-                t_seq = torch.stack(clips, 0).view(NC*num_crop, self.num_seq, C, self.seq_len, H, W)
+                t_seq = torch.stack(clips, 0).view(NC * num_crop, self.num_seq, C, self.seq_len, H, W)
             else:
                 # half overlap:
-                clips = [torch.stack(clips[i:i+self.num_seq], 0).transpose(1,2) for i in range(0,len(clips)+1-self.num_seq,3*self.num_seq//4)]
+                clips = [torch.stack(clips[i:i + self.num_seq], 0).transpose(1, 2) for i in
+                         range(0, len(clips) + 1 - self.num_seq, 3 * self.num_seq // 4)]
                 t_seq = torch.stack(clips, 0)
         else:
-            t_seq = t_seq.view(self.num_seq, self.seq_len, C, H, W).transpose(1,2)
+            t_seq = t_seq.view(self.num_seq, self.seq_len, C, H, W).transpose(1, 2)
 
         try:
             vname = vpath.split('/')[-3]
@@ -277,4 +287,3 @@ class HMDB51_3d(data.Dataset):
     def decode_action(self, action_code):
         '''give action code, return action name'''
         return self.action_dict_decode[action_code]
-
