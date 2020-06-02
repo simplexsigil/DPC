@@ -352,11 +352,10 @@ def test(data_loader, model):
       
     print('Loss {loss.avg:.4f}\t'
           'Acc top1: {top1.avg:.4f} Acc top5: {top5.avg:.4f} \t'.format(loss=losses, top1=acc_top1, top5=acc_top5))
-    confusion_mat.plot_mat(args.test+'.svg')
+    confusion_mat.plot_mat(args.test + '_confm_test_split_{}.svg'.format(args.split))
     write_log(content='Loss {loss.avg:.4f}\t Acc top1: {top1.avg:.4f} Acc top5: {top5.avg:.4f} \t'.format(loss=losses, top1=acc_top1, top5=acc_top5, args=args),
               epoch=num_epoch,
-              filename=os.path.join(os.path.dirname(args.test), 'test_log.md'))
-    import ipdb; ipdb.set_trace()
+              filename=args.test + '_log_test_split_{}.md'.format(args.split))
     return losses.avg, [acc_top1.avg, acc_top5.avg]
 
 def get_data(transform, mode='train'):
