@@ -46,6 +46,7 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--train_what', default='last', type=str, help='Train what parameters?')
 parser.add_argument('--prefix', default='tmp', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
+parser.add_argument('--num_workers', default=16, type=int)
 
 
 def main():
@@ -384,7 +385,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=my_sampler,
                                       shuffle=False,
-                                      num_workers=16,
+                                      num_workers=args.num_workers,
                                       pin_memory=True,
                                       drop_last=True)
     elif mode == 'val':
@@ -392,7 +393,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=my_sampler,
                                       shuffle=False,
-                                      num_workers=16,
+                                      num_workers=args.num_workers,
                                       pin_memory=True,
                                       drop_last=True)
     elif mode == 'test':
@@ -400,7 +401,7 @@ def get_data(transform, mode='train'):
                                       batch_size=1,
                                       sampler=my_sampler,
                                       shuffle=False,
-                                      num_workers=16,
+                                      num_workers=args.num_workers,
                                       pin_memory=True)
     print('"%s" dataset size: %d' % (mode, len(dataset)))
     return data_loader
