@@ -243,7 +243,9 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  big=False,
                  return_label=False,
                  train_csv=None,
-                 val_csv=None):
+                 val_csv=None,
+                 train_skeleton_csv=None,
+                 val_skeleton_csv=None):
         self.mode = mode
         self.transform = transform
         self.seq_len = seq_len
@@ -277,6 +279,10 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx), len(video_info), self.num_seq * self.seq_len * self.downsample))
         self.video_info = video_info.drop(drop_idx, axis=0)
+
+        # TODO: load skeleton info.
+        # Filter according to video info
+        # Make sure only videos and skeletons with same length are available.
 
         # For some reason, the original approach also samples only 30 % of the validation set.
         if mode == 'val': self.video_info = self.video_info.sample(frac=0.3, random_state=666)
@@ -312,6 +318,12 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in idx_block]
         t_seq = self.transform(seq)  # apply same transform
+
+        # TODO: Read skeleton data according to seq and pass it on as well.
+
+        # TODO: convert skeleton data into skelemotion representation (joint dynamic orientation and magnitude).
+
+        # TODO: Pass on skelemotion representation per seq.
 
         (C, H, W) = t_seq[0].size()
 

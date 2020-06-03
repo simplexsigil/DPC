@@ -38,12 +38,17 @@ class DPC_RNN(nn.Module):
                                 nn.ReLU(inplace=True),
                                 nn.Conv2d(self.param['feature_size'], self.param['feature_size'], kernel_size=1, padding=0)
                                 )
+
+        # TODO: add second stream network which is applied to skelemotion data.
+
         self.mask = None
         self.relu = nn.ReLU(inplace=False)
         self._initialize_weights(self.agg)
         self._initialize_weights(self.network_pred)
 
     def forward(self, block):
+        # TODO: forward skelemotion data seperately on second stream.
+
         # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
         ### extract feature ###
         (B, N, C, SL, H, W) = block.shape
@@ -77,6 +82,10 @@ class DPC_RNN(nn.Module):
             hidden = hidden[:,-1,:]
         pred = torch.stack(pred, 1)  # B, pred_step, xxx
         del hidden
+
+        # TODO: Now there shall be a second stream of processed skelemotion data. The ground truth for scoring is no longer the own future (after backbones).
+        # The new ground truth is the future of the other modality.
+        # This means stacking the tensors for both modalities and calculating the scoring mask accordingly.
 
         ### Get similarity score ###
         # pred: [B, pred_step, D, last_size, last_size]
