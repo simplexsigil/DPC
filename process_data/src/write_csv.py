@@ -140,15 +140,16 @@ if __name__ == '__main__':
     # f_root is the frame path
     # edit 'your_path' here: 
 
-    # main_UCF101(f_root='your_path/UCF101/frame',
-    #             splits_root='your_path/UCF101/splits_classification')
+    main_UCF101(f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'),
+                splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
+                csv_root=os.path.expanduser('~/datasets/UCF101/split'))
 
     # main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
     #              csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
 
-    main_HMDB51(f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'),
-                splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
-                csv_root=os.path.expanduser('~/datasets/HMDB51/split'))
+    # main_HMDB51(f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'),
+    #             splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
+    #             csv_root=os.path.expanduser('~/datasets/HMDB51/split'))
 
     # main_Kinetics400(mode='train', # train or val or test
     #                  k400_path='your_path/Kinetics',
