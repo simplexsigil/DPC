@@ -107,7 +107,6 @@ def main_NTURGBD(f_root, csv_root):
     This function prepares two files for the dataset: The list of video files for training and the list of video files for testing.
     Since NTURGBD does not define a fixed train test split, we just use a random 80 20 split.
     """
-    input_sets = []
     if not os.path.exists(csv_root): os.makedirs(csv_root)
 
     # fid_p = re.compile(r"(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")  # A pattern object to recognize nturgbd file ids.
@@ -115,37 +114,28 @@ def main_NTURGBD(f_root, csv_root):
 
     root, dirs, files = next(os.walk(f_root))
 
-    train_split, test_split = train_test_split(dirs, test_size=0.2, random_state=42)
+    input_set = []
+    for video_folder in tqdm(dirs, total=len(dirs)):
+        # action_id = action_p.match(video_folder).group()  # This extracts the action id (e.g. 001) as a string
 
-    for split in train_split, test_split:
-        input_set = []
-        for video_folder in tqdm(split, total=len(split)):
-            # action_id = action_p.match(video_folder).group()  # This extracts the action id (e.g. 001) as a string
+        vid_root, vid_dirs, vid_frames = next(os.walk(os.path.join(root, video_folder)))
+        frame_count = len(vid_frames)
 
-            vid_root, vid_dirs, vid_frames = next(os.walk(os.path.join(root, video_folder)))
-            frame_count = len(vid_frames)
+        input_set.append([os.path.join(root, video_folder), frame_count])
 
-            input_set.append([os.path.join(root, video_folder), frame_count])
-
-        input_sets.append(input_set)
-
-    train_set = input_sets[0]
-    test_set = input_sets[1]
-
-    write_list(train_set, os.path.join(csv_root, 'train_set.csv'))
-    write_list(test_set, os.path.join(csv_root, 'test_set.csv'))
+    write_list(input_set, os.path.join(csv_root, 'video_info.csv'))
 
 
 if __name__ == '__main__':
     # f_root is the frame path
     # edit 'your_path' here: 
 
-    main_UCF101(f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'),
-                splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
-                csv_root=os.path.expanduser('~/datasets/UCF101/split'))
+    #main_UCF101(f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'),
+    #            splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
+    #            csv_root=os.path.expanduser('~/datasets/UCF101/split'))
 
-    # main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
-    #              csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
+    main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
+                 csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
 
     # main_HMDB51(f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'),
     #             splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),

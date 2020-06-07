@@ -34,14 +34,14 @@ parser.add_argument('--seq_len', default=5, type=int, help='number of frames in 
 parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=2, type=int)
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=96, type=int)
+parser.add_argument('--batch_size', default=32, type=int)
 parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
 parser.add_argument('--epochs', default=10, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--gpu', default=[0,2], type=int, nargs='+')
+parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
@@ -53,6 +53,12 @@ parser.add_argument('--train_csv',
 parser.add_argument('--test_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/test_set.csv"),
                     type=str)
+parser.add_argument('--nturgbd-video-info',
+                    default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/video_info.csv"),
+                    type=str)
+parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/datasets/nturgbd/skele-motion"),
+                    type=str)
+parser.add_argument('--split-mode', default="all", type=str)
 
 
 def main():
@@ -350,8 +356,9 @@ def get_data(transform, mode='train'):
                              seq_len=args.seq_len,
                              num_seq=args.num_seq,
                              downsample=args.ds,
-                             train_csv=args.train_csv,
-                             val_csv=args.test_csv)
+                             nturgbd_video_info=args.nturgbd_video_info,
+                             skele_motion_root=args.nturgbd_skele_motion,
+                             split_mode=args.split_mode)
     else:
         raise ValueError('dataset not supported')
 

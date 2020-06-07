@@ -1,3 +1,4 @@
+import glob
 import os
 import sys
 
@@ -242,10 +243,9 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  unit_test=False,
                  big=False,
                  return_label=False,
-                 train_csv=None,
-                 val_csv=None,
-                 train_skeleton_csv=None,
-                 val_skeleton_csv=None):
+                 nturgbd_video_info=None,
+                 skele_motion_root=None,
+                 split_mode="cross-setup"):
         self.mode = mode
         self.transform = transform
         self.seq_len = seq_len
@@ -254,8 +254,16 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         self.epsilon = epsilon
         self.unit_test = unit_test
         self.return_label = return_label
+        self.split_mode = split_mode
+
+        # Each file/folder name in both datasets is in the format of SsssCcccPpppRrrrAaaa (e.g., S001C002P003R002A013),
+        # in which sss is the setup number, ccc is the camera ID, ppp is the performer (subject) ID,
+        # rrr is the replication number (1 or 2), and aaa is the action class label.
+        self.nturgbd_id_pattern = re.compile(r"(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")
         # A pattern object to recognize nturgbd action ids.
         self.action_code_pattern = re.compile(r"S\d{3}C\d{3}P\d{3}R\d{3}A(\d{3})")
+        self.setup_pattern = re.compile(r"S(\d{3})C\d{3}P\d{3}R\d{3}A\d{3}")
+        self.subject_pattern = re.compile(r"S\d{3}C\d{3}P(\d{3})R\d{3}A\d{3}")
 
         print('Using nturgbd data (150x150)')
 
@@ -263,13 +271,53 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         self.action_dict_encode = {label: act_id for act_id, label in enumerate(nturgbd_action_labels)}
         self.action_dict_decode = {act_id: label for act_id, label in enumerate(nturgbd_action_labels)}
 
-        # splits
-        if mode == 'train':
-            video_info = pd.read_csv(train_csv, header=None)
-        elif (mode == 'val') or (mode == 'test'):
-            video_info = pd.read_csv(val_csv, header=None)
-        else: raise ValueError('wrong mode')
+        video_info = pd.read_csv(nturgbd_video_info, header=None)
+        video_paths = [vid_inf for idx, (vid_inf, fc) in video_info.iterrows()]
+        video_paths = [os.path.split(path) for path in video_paths]
 
+        drop_idx = []
+
+        # Splits
+        # Cross setup mode
+        if self.split_mode == "cross-setup":
+            setups = [int(self.setup_pattern.match(vid_path[1]).group()) for vid_path in video_paths]
+            if mode == "train":
+                for idx, setup in enumerate(setups):
+                    if setup % 2 == 1:  # All even setups are used for training.
+                        drop_idx.append(idx)
+
+            elif mode == "val":
+                for idx, setup in enumerate(setups):
+                    if setup % 2 == 0:  # All odd setups are used for evaluation.
+                        drop_idx.append(idx)
+            else:
+                raise ValueError()
+
+        # Cross subject mode
+        elif self.split_mode == "cross-subject":
+            subjects = [int(self.subject_pattern.match(vid_path[1]).group()) for vid_path in video_paths]
+            if mode == "train":
+                for idx, subject in enumerate(subjects):
+                    if subject not in nturgbd_cross_subject_training:
+                        drop_idx.append(idx)
+
+            elif mode == "val":
+                for idx, subject in enumerate(subjects):
+                    if subject in nturgbd_cross_subject_training:
+                        drop_idx.append(idx)
+
+            else:
+                raise ValueError()
+
+        elif self.split_mode == "all":
+            drop_idx = []  # For self supervised learning. Train and val contain all videos.
+
+        else:
+            raise ValueError()
+
+        video_info.drop(drop_idx, axis=0)
+
+        # Filtering videos based on length.
         drop_idx = []
         print('filter out too short videos ...')
         for idx, row in tqdm(video_info.iterrows(), total=len(video_info)):
@@ -277,15 +325,34 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
             if vlen - self.num_seq * self.seq_len * self.downsample <= 0:
                 drop_idx.append(idx)
 
-        print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx), len(video_info), self.num_seq * self.seq_len * self.downsample))
+        print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx),
+                                                                                                       len(video_info),
+                                                                                                       self.num_seq * self.seq_len * self.downsample))
         self.video_info = video_info.drop(drop_idx, axis=0)
 
-        # TODO: load skeleton info.
-        # Filter according to video info
-        # Make sure only videos and skeletons with same length are available.
+        # Filtering videos based on presence of skeleton information.
+        drop_idx = []
+        self.skeleton_paths = glob.glob(os.path.join(skele_motion_root,
+                                                     "*.npz"))  # Listing all skeleton files, discarding videos without matching file.
+        skeleton_files = [os.path.split(skf) for skf in self.skeleton_paths]
 
-        # For some reason, the original approach also samples only 30 % of the validation set.
-        if mode == 'val': self.video_info = self.video_info.sample(frac=0.3, random_state=666)
+        video_ids = [v_path for idx, (v_path, fc) in video_info.iterrows()]
+        video_ids = [self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group() for v_path in video_ids]
+        skeleton_ids = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in skeleton_files])
+
+        print('check for available skeleton information ...')
+        for idx, v_id in tqdm(enumerate(video_ids), total=len(video_info)):
+            if v_id not in skeleton_ids:
+                drop_idx.append(idx)
+
+        print("Discarded {} of {} videos due to missing skeleton information".format(len(drop_idx),
+                                                                                     len(video_info)))
+
+        self.video_info = video_info.drop(drop_idx, axis=0)
+
+        print("Remaining videos in mode {}: {}".format(self.mode, len(self.video_info)))
+
+        # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.unit_test: self.video_info = self.video_info.sample(32, random_state=666)
         # shuffle not necessary because use RandomSampler
 
@@ -312,6 +379,11 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         vpath, vlen = self.video_info.iloc[index]
         items = self.idx_sampler(vlen, vpath)
 
+        video_id = self.nturgbd_id_pattern.match(os.path.split(vpath)[1]).group()
+
+        # TODO: This might be time consuming for lots of skeleton files (alternative building dictionary in constructor)
+        sk_path = next((p for p in self.skeleton_paths if re.match(video_id, os.path.split(p)[1])))
+
         idx_block, vpath = items
         assert idx_block.shape == (self.num_seq, self.seq_len)
         idx_block = idx_block.reshape(self.num_seq * self.seq_len)
@@ -319,11 +391,13 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in idx_block]
         t_seq = self.transform(seq)  # apply same transform
 
-        # TODO: Read skeleton data according to seq and pass it on as well.
+        sk_img = self.load_skeleton_img(sk_path, idx_block)
 
-        # TODO: convert skeleton data into skelemotion representation (joint dynamic orientation and magnitude).
+        # The skeleton image connsists of joint values over time. H = Joints, W = Time steps (num_seq * seq_len).
+        (sk_C, sk_H, sk_N) = sk_img.size()
 
-        # TODO: Pass on skelemotion representation per seq.
+        # (num_seq, sk_C, seq_len, sk_H)
+        sk_img = sk_img.transpose(1, 2).view(sk_C, self.num_seq, self.seq_len, sk_H).transpose(0, 1)
 
         (C, H, W) = t_seq[0].size()
 
@@ -340,12 +414,33 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                 print("Could not extract action id from video path: {}".format(vpath))
 
             label = torch.LongTensor([action_id])
-            return t_seq, label
+            return t_seq, sk_img, label
 
-        return t_seq
+        return t_seq, sk_img
 
     def __len__(self):
         return len(self.video_info)
+
+    def load_skeleton_img(self, sk_path, idx_block) -> torch.Tensor:
+        """
+        Loads a skele-motion representation and selects the columns which are indexed by idx_block.
+        TODO: Account for different representations.
+        """
+        sk_seq = np.load(sk_path)
+        sk_seq = sk_seq['arr_0']
+
+        (J, L, C) = sk_seq.shape
+        mask = [False] * L
+        for i in idx_block:
+            mask[i] = True
+
+        sk_seq = sk_seq[:, mask, :]
+
+        (J, L, C) = sk_seq.shape
+
+        assert L == len(idx_block)
+
+        return torch.Tensor(sk_seq)
 
     def encode_action(self, action_name, zero_indexed=True):
         '''give action name, return category'''
@@ -478,3 +573,7 @@ nturgbd_action_labels = [
     "support somebody with hand",
     "finger-guessing game (playing rock-paper-scissors)"
 ]
+
+nturgbd_cross_subject_training = [1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 31, 34, 35,
+                                  38, 45, 46, 47, 49, 50, 52, 53, 54, 55, 56, 57, 58, 59, 70, 74, 78,
+                                  80, 81, 82, 83, 84, 85, 86, 89, 91, 92, 93, 94, 95, 97, 98, 100, 103]

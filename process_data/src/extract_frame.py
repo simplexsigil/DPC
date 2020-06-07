@@ -164,8 +164,8 @@ if __name__ == '__main__':
     main_UCF101(v_root=os.path.expanduser('~/datasets/UCF101/UCF-101'),
                 f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'))
 
-    main_HMDB51(v_root=os.path.expanduser('~/datasets/HMDB51/hmdb51'),
-                f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'))
+    # main_HMDB51(v_root=os.path.expanduser('~/datasets/HMDB51/hmdb51'),
+    #             f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'))
 
 # main_kinetics400(v_root='your_path/Kinetics400/videos',
 #                  f_root='your_path/Kinetics400/frame', dim=150)
