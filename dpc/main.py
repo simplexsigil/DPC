@@ -34,7 +34,7 @@ parser.add_argument('--seq_len', default=5, type=int, help='number of frames in 
 parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=2, type=int)
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=32, type=int)
+parser.add_argument('--batch_size', default=4, type=int)
 parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -240,11 +240,13 @@ def train(data_loader, model, optimizer, epoch):
     model.train()
     global iteration
 
-    for idx, input_seq in enumerate(data_loader):
+    for idx, (input_seq, sk_seq) in enumerate(data_loader):
         tic = time.time()
         input_seq = input_seq.to(cuda)
+        sk_seq = sk_seq.to(cuda)
+
         B = input_seq.size(0)
-        [score_, mask_] = model(input_seq)
+        [score_, mask_] = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
             if B > 2: input_seq = input_seq[0:2, :]
@@ -369,7 +371,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=32,
+                                      num_workers=2,
                                       pin_memory=True,
                                       drop_last=True)
     elif mode == 'val':
@@ -377,7 +379,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=32,
+                                      num_workers=2,
                                       pin_memory=True,
                                       drop_last=True)
     print('"%s" dataset size: %d' % (mode, len(dataset)))

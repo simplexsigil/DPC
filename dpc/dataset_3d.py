@@ -10,6 +10,7 @@ sys.path.append('../utils')
 from augmentation import *
 from tqdm import tqdm
 import re
+from typing import List
 
 
 def pil_loader(path):
@@ -38,8 +39,10 @@ class Kinetics400_full_3d(data.Dataset):
         self.unit_test = unit_test
         self.return_label = return_label
 
-        if big: print('Using Kinetics400 full data (256x256)')
-        else: print('Using Kinetics400 full data (150x150)')
+        if big:
+            print('Using Kinetics400 full data (256x256)')
+        else:
+            print('Using Kinetics400 full data (150x150)')
 
         # get action list
         self.action_dict_encode = {}
@@ -60,7 +63,8 @@ class Kinetics400_full_3d(data.Dataset):
             elif (mode == 'val') or (mode == 'test'):
                 split = '../process_data/data/kinetics400_256/val_split.csv'
                 video_info = pd.read_csv(split, header=None)
-            else: raise ValueError('wrong mode')
+            else:
+                raise ValueError('wrong mode')
         else:  # small
             if mode == 'train':
                 split = '../process_data/data/kinetics400/train_split.csv'
@@ -68,7 +72,8 @@ class Kinetics400_full_3d(data.Dataset):
             elif (mode == 'val') or (mode == 'test'):
                 split = '../process_data/data/kinetics400/val_split.csv'
                 video_info = pd.read_csv(split, header=None)
-            else: raise ValueError('wrong mode')
+            else:
+                raise ValueError('wrong mode')
 
         drop_idx = []
         print('filter out too short videos ...')
@@ -160,7 +165,8 @@ class UCF101_3d(data.Dataset):
         elif (mode == 'val') or (mode == 'test'):  # use val for test
             split = '../process_data/data/ucf101/test_split%02d.csv' % self.which_split
             video_info = pd.read_csv(split, header=None)
-        else: raise ValueError('wrong mode')
+        else:
+            raise ValueError('wrong mode')
 
         # get action list
         self.action_dict_encode = {}
@@ -264,6 +270,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         self.action_code_pattern = re.compile(r"S\d{3}C\d{3}P\d{3}R\d{3}A(\d{3})")
         self.setup_pattern = re.compile(r"S(\d{3})C\d{3}P\d{3}R\d{3}A\d{3}")
         self.subject_pattern = re.compile(r"S\d{3}C\d{3}P(\d{3})R\d{3}A\d{3}")
+        self.sk_magnitude_pattern = re.compile(r".*CaetanoMagnitude.*")
+        self.sk_orientation_pattern = re.compile(r".*CaetanoOrientation.*")
 
         print('Using nturgbd data (150x150)')
 
@@ -335,14 +343,17 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         self.skeleton_paths = glob.glob(os.path.join(skele_motion_root,
                                                      "*.npz"))  # Listing all skeleton files, discarding videos without matching file.
         skeleton_files = [os.path.split(skf) for skf in self.skeleton_paths]
+        sk_files_orientation = [f for f in skeleton_files if self.sk_orientation_pattern.match(f[1])]
+        sk_files_magnitude = [f for f in skeleton_files if self.sk_magnitude_pattern.match(f[1])]
 
         video_ids = [v_path for idx, (v_path, fc) in video_info.iterrows()]
         video_ids = [self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group() for v_path in video_ids]
-        skeleton_ids = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in skeleton_files])
+        sk_ids_orientation = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_orientation])
+        sk_ids_magnitude = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_magnitude])
 
         print('check for available skeleton information ...')
         for idx, v_id in tqdm(enumerate(video_ids), total=len(video_info)):
-            if v_id not in skeleton_ids:
+            if v_id not in sk_ids_orientation or v_id not in sk_ids_magnitude:
                 drop_idx.append(idx)
 
         print("Discarded {} of {} videos due to missing skeleton information".format(len(drop_idx),
@@ -382,7 +393,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         video_id = self.nturgbd_id_pattern.match(os.path.split(vpath)[1]).group()
 
         # TODO: This might be time consuming for lots of skeleton files (alternative building dictionary in constructor)
-        sk_path = next((p for p in self.skeleton_paths if re.match(video_id, os.path.split(p)[1])))
+        sk_paths = [p for p in self.skeleton_paths if re.match(video_id, os.path.split(p)[1])]
 
         idx_block, vpath = items
         assert idx_block.shape == (self.num_seq, self.seq_len)
@@ -391,13 +402,14 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         seq = [pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in idx_block]
         t_seq = self.transform(seq)  # apply same transform
 
-        sk_img = self.load_skeleton_img(sk_path, idx_block)
+        sk_seq = self.load_skeleton_seqs(sk_paths, idx_block)
 
         # The skeleton image connsists of joint values over time. H = Joints, W = Time steps (num_seq * seq_len).
-        (sk_C, sk_H, sk_N) = sk_img.size()
+        (sk_J, sk_N, sk_C) = sk_seq.shape
 
-        # (num_seq, sk_C, seq_len, sk_H)
-        sk_img = sk_img.transpose(1, 2).view(sk_C, self.num_seq, self.seq_len, sk_H).transpose(0, 1)
+        sk_seq = sk_seq.transpose(0, 1)  # This is transposed, so we can split the image into blocks during training.
+        sk_seq = sk_seq.view(self.num_seq, self.seq_len, sk_J, sk_C)
+        sk_seq = sk_seq.transpose(2, 3).transpose(1, 2)  # (self.num_seq, C, T, J)
 
         (C, H, W) = t_seq[0].size()
 
@@ -414,33 +426,50 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                 print("Could not extract action id from video path: {}".format(vpath))
 
             label = torch.LongTensor([action_id])
-            return t_seq, sk_img, label
+            return t_seq, sk_seq, label
 
-        return t_seq, sk_img
+        return t_seq, sk_seq
 
     def __len__(self):
         return len(self.video_info)
 
-    def load_skeleton_img(self, sk_path, idx_block) -> torch.Tensor:
+    def load_skeleton_seqs(self, sk_paths: List, idx_block) -> torch.Tensor:
         """
         Loads a skele-motion representation and selects the columns which are indexed by idx_block.
-        TODO: Account for different representations.
+        Returns a tensor of shape (Joints, Length, Channels).
+        The length describes the number of time steps (frame count when downsampling is 1).
+        First 3 channels are orientation, last channel is magnitude.
         """
-        sk_seq = np.load(sk_path)
-        sk_seq = sk_seq['arr_0']
+        sk_path_mag = next(p for p in sk_paths if self.sk_magnitude_pattern.match(p))
+        sk_path_ori = next(p for p in sk_paths if self.sk_orientation_pattern.match(p))
 
-        (J, L, C) = sk_seq.shape
-        mask = [False] * L
+        sk_seq_mag = np.load(sk_path_mag)
+        sk_seq_ori = np.load(sk_path_ori)
+
+        sk_seq_mag = sk_seq_mag['arr_0']
+        sk_seq_ori = sk_seq_ori['arr_0']
+
+        (J_m, L_m, C_m) = sk_seq_ori.shape
+        (J_o, L_o, C_o) = sk_seq_ori.shape
+
+        assert J_m == J_o and L_m == L_o
+
+        mask = [False] * L_m
         for i in idx_block:
             mask[i] = True
 
-        sk_seq = sk_seq[:, mask, :]
+        sk_seq_mag = sk_seq_mag[:, mask, :]
+        sk_seq_ori = sk_seq_ori[:, mask, :]
+
+        sk_seq = np.concatenate((sk_seq_ori, sk_seq_mag), axis=-1)
 
         (J, L, C) = sk_seq.shape
 
+        assert C == C_m + C_o
+
         assert L == len(idx_block)
 
-        return torch.Tensor(sk_seq)
+        return torch.tensor(sk_seq, dtype=torch.float)
 
     def encode_action(self, action_name, zero_indexed=True):
         '''give action name, return category'''
