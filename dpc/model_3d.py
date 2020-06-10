@@ -219,70 +219,94 @@ class DPC_RNN(nn.Module):
         score_rgb_sk = torch.matmul(pred_rgb, feature_inf_sk).view(B, N, B, N)
         score_sk_rgb = torch.matmul(pred_sk, feature_inf_rgb).view(B, N, B, N)
 
-
-
         if self.mask is None:
             # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-            mask = torch.zeros((B, N, B, N), dtype=torch.int8, requires_grad=False).detach().cuda()
-            # Todo: create mask for scoring.
 
-        ### Get similarity score ###
-        # pred: [B, pred_step, D, last_size, last_size]
-        # Ground Truth: [B, N, D, last_size, last_size]
-        N = self.pred_step
-        # dot product D dimension in pred-GT pair, get a 6d tensor. First 3 dims are from pred, last 3 dims are from GT.
-        # permute: get dimensionality to end.
-        # view: 2D tensor: only make sure that each output feature has its own vector, now matter which seq step, batch idx or location.
-        pred_rgb = pred_rgb.permute(0, 1, 3, 4, 2).contiguous().view(B * self.pred_step * self.last_size ** 2,
-                                                                     self.param['feature_size'])
+            # By default: everything easy negatives (0).
+            self.mask = torch.zeros((B, N, B, N), dtype=torch.int8, requires_grad=False).detach().cuda()
 
-        # Same thing for feature_inf = ground truth: only: transpose matrix to calculate dot product of predicted and ground truth features.
-        feature_inf_rgb = feature_inf_rgb.permute(0, 1, 3, 4, 2).contiguous().view(B * N * self.last_size ** 2,
-                                                                                   self.param[
-                                                                                       'feature_size']).transpose(0, 1)
-
-        # First: make scoring by mat mul.
-        # Second: Each feature vector of length D has been multiplied with its ground truth and all others.
-        # Input had size B*N*LS*LS x D and D X B*N*LS*LS. Output has Size B*N*LS*LS x B*N*LS*LS
-        # Third: Output now has shape (B, N, LS*LS, B, N, LS*LS)
-        score = torch.matmul(pred_rgb, feature_inf_rgb).view(B, self.pred_step, self.last_size ** 2, B, N,
-                                                             self.last_size ** 2)
-        del feature_inf_rgb, pred_rgb
-
-        # Given scoring Matrix of shape B*N*LS*LS x B*N*LS*LS
-        # Positive: 3D diagonal
-        if self.mask is None:  # only compute mask once
-            # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-            mask = torch.zeros((B, self.pred_step, self.last_size ** 2, B, N, self.last_size ** 2), dtype=torch.int8,
-                               requires_grad=False).detach().cuda()
-
-            # If two indexing arrays can be broadcast to have the same shape, they are used elementwise as index pairs.
-            # If it is the same batch index: All negatives are spacial negatives. This includes the temporal negatives and positives at this point.
-            mask[torch.arange(B), :, :, torch.arange(B), :, :] = -3  # spatial neg
+            # There are no spatial negatives (-3), since we are not using dense features here.
 
             # For each matching batch index:
             # Take all dimension features which go together (this makes it a subset of the case above) and set the temporal negative (includes positives)
             for k in range(B):
-                mask[k, :, torch.arange(self.last_size ** 2), k, :,
-                torch.arange(self.last_size ** 2)] = -1  # temporal neg
+                # temporal neg
+                self.mask[k, :, k, :] = -1
+
+            # Simple positive (1) is the diagonal: The equivalent skeleton representation to a video representation.
+            for j in range(B):
+                self.mask[j, torch.arange(self.pred_step), j, torch.arange(N - self.pred_step, N)] = 1  # pos
 
             # Now changing the approach by permutating the matrix around: (B, LS*LS, N,  B, LS*LS, N)
             # Then: (B*LS*LS, N,  B*LS*LS, N)
             # For each element: its accompanying future prediction is a positive. Example. [0,1] and [3,4]
             # This means that the beginning is always used to predict the end, it does not predict everything after pred step.
             # Is that really what it is supposed to do? Maybe does not matter a lot, but why not predict the whole sequence until the end?
-            tmp = mask.permute(0, 2, 1, 3, 5, 4).contiguous().view(B * self.last_size ** 2, self.pred_step,
-                                                                   B * self.last_size ** 2, N)
-            for j in range(B * self.last_size ** 2):
-                tmp[j, torch.arange(self.pred_step), j, torch.arange(N - self.pred_step, N)] = 1  # pos
 
-            # (B, LS * LS, N, B, LS * LS, N)
-            mask = tmp.view(B, self.last_size ** 2, self.pred_step, B, self.last_size ** 2, N).permute(0, 2, 1, 3, 5, 4)
 
-            # (B, N, LS * LS, B, N, LS * LS)
-            self.mask = mask
 
-        return [score, self.mask]
+
+
+
+            # Todo: create mask for scoring.
+
+        # ### Get similarity score ###
+        # # pred: [B, pred_step, D, last_size, last_size]
+        # # Ground Truth: [B, N, D, last_size, last_size]
+        # N = self.pred_step
+        # # dot product D dimension in pred-GT pair, get a 6d tensor. First 3 dims are from pred, last 3 dims are from GT.
+        # # permute: get dimensionality to end.
+        # # view: 2D tensor: only make sure that each output feature has its own vector, now matter which seq step, batch idx or location.
+        # pred_rgb = pred_rgb.permute(0, 1, 3, 4, 2).contiguous().view(B * self.pred_step * self.last_size ** 2,
+        #                                                              self.param['feature_size'])
+        #
+        # # Same thing for feature_inf = ground truth: only: transpose matrix to calculate dot product of predicted and ground truth features.
+        # feature_inf_rgb = feature_inf_rgb.permute(0, 1, 3, 4, 2).contiguous().view(B * N * self.last_size ** 2,
+        #                                                                            self.param[
+        #                                                                                'feature_size']).transpose(0, 1)
+        #
+        # # First: make scoring by mat mul.
+        # # Second: Each feature vector of length D has been multiplied with its ground truth and all others.
+        # # Input had size B*N*LS*LS x D and D X B*N*LS*LS. Output has Size B*N*LS*LS x B*N*LS*LS
+        # # Third: Output now has shape (B, N, LS*LS, B, N, LS*LS)
+        # score = torch.matmul(pred_rgb, feature_inf_rgb).view(B, self.pred_step, self.last_size ** 2, B, N,
+        #                                                      self.last_size ** 2)
+        # del feature_inf_rgb, pred_rgb
+        #
+        # # Given scoring Matrix of shape B*N*LS*LS x B*N*LS*LS
+        # # Positive: 3D diagonal
+        # if self.mask is None:  # only compute mask once
+        #     # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
+        #     mask = torch.zeros((B, self.pred_step, self.last_size ** 2, B, N, self.last_size ** 2), dtype=torch.int8,
+        #                        requires_grad=False).detach().cuda()
+        #
+        #     # If two indexing arrays can be broadcast to have the same shape, they are used elementwise as index pairs.
+        #     # If it is the same batch index: All negatives are spacial negatives. This includes the temporal negatives and positives at this point.
+        #     mask[torch.arange(B), :, :, torch.arange(B), :, :] = -3  # spatial neg
+        #
+        #     # For each matching batch index:
+        #     # Take all dimension features which go together (this makes it a subset of the case above) and set the temporal negative (includes positives)
+        #     for k in range(B):
+        #         mask[k, :, torch.arange(self.last_size ** 2), k, :,
+        #         torch.arange(self.last_size ** 2)] = -1  # temporal neg
+        #
+        #     # Now changing the approach by permutating the matrix around: (B, LS*LS, N,  B, LS*LS, N)
+        #     # Then: (B*LS*LS, N,  B*LS*LS, N)
+        #     # For each element: its accompanying future prediction is a positive. Example. [0,1] and [3,4]
+        #     # This means that the beginning is always used to predict the end, it does not predict everything after pred step.
+        #     # Is that really what it is supposed to do? Maybe does not matter a lot, but why not predict the whole sequence until the end?
+        #     tmp = mask.permute(0, 2, 1, 3, 5, 4).contiguous().view(B * self.last_size ** 2, self.pred_step,
+        #                                                            B * self.last_size ** 2, N)
+        #     for j in range(B * self.last_size ** 2):
+        #         tmp[j, torch.arange(self.pred_step), j, torch.arange(N - self.pred_step, N)] = 1  # pos
+        #
+        #     # (B, LS * LS, N, B, LS * LS, N)
+        #     mask = tmp.view(B, self.last_size ** 2, self.pred_step, B, self.last_size ** 2, N).permute(0, 2, 1, 3, 5, 4)
+        #
+        #     # (B, N, LS * LS, B, N, LS * LS)
+        #     self.mask = mask
+
+        return [score_rgb_sk, score_sk_rgb, self.mask]
 
     def _initialize_weights(self, module):
         for name, param in module.named_parameters():
