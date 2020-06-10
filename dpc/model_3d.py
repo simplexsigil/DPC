@@ -46,7 +46,7 @@ class DPC_RNN(nn.Module):
         #                   kernel_size=1,
         #                   num_layers=self.param['num_layers'])
 
-        self.rgb_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
+        # self.rgb_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
 
         # self.rgb_network_pred = nn.Sequential(
         #     nn.Conv2d(self.param['feature_size'], self.param['feature_size'], kernel_size=1, padding=0),
@@ -54,11 +54,11 @@ class DPC_RNN(nn.Module):
         #     nn.Conv2d(self.param['feature_size'], self.param['feature_size'], kernel_size=1, padding=0)
         # )
 
-        self.rgb_network_pred = nn.Sequential(
-            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
-            nn.ReLU(inplace=True),
-            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
-        )
+        # self.rgb_network_pred = nn.Sequential(
+        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
+        # )
 
         self.dpc_feature_conversion = nn.Sequential(
             nn.Flatten(start_dim=2, end_dim=-1),
@@ -107,25 +107,25 @@ class DPC_RNN(nn.Module):
             # nn.Softmax(dim=1)
         )
 
-        self.sk_network_pred = nn.Sequential(
-            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
-            nn.ReLU(inplace=True),
-            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
-            # Make sure, output has correct size (vector length 10000)
-        )
+        # self.sk_network_pred = nn.Sequential(
+        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
+        #    # Make sure, output has correct size (vector length 10000)
+        # )
 
         # Output of backbone are 2 vectors each length 1000
         # Concatenate and forward with GRU
         # Split vectors in two single vectors and use prediction network.
         # Alternativ: another conv GRU
-        self.sk_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
+        # self.sk_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
 
         self.mask = None
         self.relu = nn.ReLU(inplace=False)
-        self._initialize_weights(self.rgb_agg)
-        self._initialize_weights(self.sk_agg)
-        self._initialize_weights(self.sk_network_pred)
-        self._initialize_weights(self.rgb_network_pred)
+        # self._initialize_weights(self.rgb_agg)
+        # self._initialize_weights(self.sk_agg)
+        # self._initialize_weights(self.sk_network_pred)
+        # self._initialize_weights(self.rgb_network_pred)
         self._initialize_weights(self.dpc_feature_conversion)
         self._initialize_weights(self.skele_motion_backbone)
 
@@ -153,33 +153,33 @@ class DPC_RNN(nn.Module):
 
         feature_raw = feature_com
 
-        feature_com = feature_com.transpose(0, 1)  # GRUs take (N, B, features)
+        # feature_com = feature_com.transpose(0, 1)  # GRUs take (N, B, features)
 
         # feature_ori_inf = feature_ori[:, N - self.pred_step::, :].contiguous()
         # feature_mag_inf = feature_mag[:, N - self.pred_step::, :].contiguous()
 
-        feature_com_inf = feature_com[N - self.pred_step::, :, :].contiguous()  # Shape (N, B, 2000)
+        # feature_com_inf = feature_com[N - self.pred_step::, :, :].contiguous()  # Shape (N, B, 2000)
 
         # Apply GRU on the features to predict future.
-        _, hidden = self.sk_agg(feature_com[0:N - self.pred_step, :, :].contiguous())
+        # _, hidden = self.sk_agg(feature_com[0:N - self.pred_step, :, :].contiguous())
 
-        hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
+        # hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
 
-        pred = []
+        # pred = []
         # Predict next time step from hidden vector, then predict next hidden vector from time step and hidden vector.
-        for i in range(self.pred_step):
+        # for i in range(self.pred_step):
             # sequentially pred future
 
-            p_tmp = self.sk_network_pred(hidden)
-            pred.append(p_tmp)
-            _, hidden = self.sk_agg(self.relu(p_tmp).unsqueeze(0), hidden.unsqueeze(0))
-            hidden = hidden[-1, :, :]
+          #  p_tmp = self.sk_network_pred(hidden)
+           # pred.append(p_tmp)
+          #  _, hidden = self.sk_agg(self.relu(p_tmp).unsqueeze(0), hidden.unsqueeze(0))
+           # hidden = hidden[-1, :, :]
 
-        pred = torch.stack(pred, 0)  # pred_step, B, xxx
-        pred = pred.transpose(0, 1)
-        del hidden
+        # pred = torch.stack(pred, 0)  # pred_step, B, xxx
+        #pred = pred.transpose(0, 1)
+        #del hidden
 
-        return pred, feature_com_inf, feature_raw
+        return feature_raw
 
     def _forward_rgb(self, block_rgb):
         # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
@@ -199,54 +199,54 @@ class DPC_RNN(nn.Module):
         #feature = feature.view(B, N, self.crossm_vector_length)
         feature_raw = feature
 
-        feature = feature.transpose(0, 1)
+        # feature = feature.transpose(0, 1)
+        #
+        # # The individually forwarded blocks are aggregated into batches again. self.param['feature_size'] are feature maps?
+        # # feature_inf_all = feature.view(B, N, self.param['feature_size'], self.last_size,self.last_size)  # before ReLU, (-inf, +inf)
+        # # feature_inf_all = feature.view(B, N, 2000)
+        #
+        # # The input features after the backbone to be predicted.
+        # feature_inf = feature[N - self.pred_step::, :, :].contiguous()
+        #
+        # #del feature_inf_all
+        #
+        # # [B,N,D,6,6], [0, +inf)
+        # # feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size)
+        # # feature = feature.view(B, N, 2000)
+        #
+        # ### aggregate, predict future ###
+        # _, hidden = self.rgb_agg(self.relu(feature[0:N - self.pred_step, :, :].contiguous()))  # Apply GRU on the features to predict future.
+        # hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
+        #
+        # pred = []
+        # # Predict next time step from hidden vector, then predict next hidden vector from time step and hidden vector.
+        # for i in range(self.pred_step):
+        #     # sequentially pred future
+        #     p_tmp = self.rgb_network_pred(hidden)
+        #     pred.append(p_tmp)
+        #     _, hidden = self.rgb_agg(self.relu(p_tmp).unsqueeze(0), hidden.unsqueeze(0))
+        #     hidden = hidden[-1, :, :]
+        #
+        # pred = torch.stack(pred, 0)  # B, pred_step, xxx
+        # pred = pred.transpose(0, 1)
+        #
+        # del hidden
 
-        # The individually forwarded blocks are aggregated into batches again. self.param['feature_size'] are feature maps?
-        # feature_inf_all = feature.view(B, N, self.param['feature_size'], self.last_size,self.last_size)  # before ReLU, (-inf, +inf)
-        # feature_inf_all = feature.view(B, N, 2000)
-
-        # The input features after the backbone to be predicted.
-        feature_inf = feature[N - self.pred_step::, :, :].contiguous()
-
-        #del feature_inf_all
-
-        # [B,N,D,6,6], [0, +inf)
-        # feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size)
-        # feature = feature.view(B, N, 2000)
-
-        ### aggregate, predict future ###
-        _, hidden = self.rgb_agg(self.relu(feature[0:N - self.pred_step, :, :].contiguous()))  # Apply GRU on the features to predict future.
-        hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
-
-        pred = []
-        # Predict next time step from hidden vector, then predict next hidden vector from time step and hidden vector.
-        for i in range(self.pred_step):
-            # sequentially pred future
-            p_tmp = self.rgb_network_pred(hidden)
-            pred.append(p_tmp)
-            _, hidden = self.rgb_agg(self.relu(p_tmp).unsqueeze(0), hidden.unsqueeze(0))
-            hidden = hidden[-1, :, :]
-
-        pred = torch.stack(pred, 0)  # B, pred_step, xxx
-        pred = pred.transpose(0, 1)
-
-        del hidden
-
-        return pred, feature_inf, feature_raw
+        return feature_raw
 
     def forward(self, block_rgb, block_sk):
         # TODO: forward skelemotion data seperately on second stream.
         B = block_rgb.shape[0]
 
-        pred_sk_o, feature_inf_sk, pred_sk = self._forward_sk(block_sk)  # (B, N, D)
-        pred_rgb_o, feature_inf_rgb, pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
+        pred_sk = self._forward_sk(block_sk)  # (B, N, D)
+        pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
 
         (B, N, D) = pred_sk.shape
         # TODO: Now there shall be a second stream of processed skelemotion data. The ground truth for scoring is no longer the own future (after backbones).
 
         # The score is now calculated according to the other modality. for this we calculate the dot product of the feature vectors:
-        pred_rgb = pred_rgb.contiguous().view(B*N,D)
-        pred_sk = pred_sk.contiguous().view(B*N,D)
+        pred_rgb = pred_rgb.contiguous().view(B*N, D)
+        pred_sk = pred_sk.contiguous().view(B*N, D)
 
         score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1)).view(B, N, B, N)
 
