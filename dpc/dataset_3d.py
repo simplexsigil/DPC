@@ -279,8 +279,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         self.action_dict_encode = {label: act_id for act_id, label in enumerate(nturgbd_action_labels)}
         self.action_dict_decode = {act_id: label for act_id, label in enumerate(nturgbd_action_labels)}
 
-        video_info = pd.read_csv(nturgbd_video_info, header=None)
-        video_paths = [vid_inf for idx, (vid_inf, fc) in video_info.iterrows()]
+        self.video_info = pd.read_csv(nturgbd_video_info, header=None)
+        video_paths = [vid_inf for idx, (vid_inf, fc) in self.video_info.iterrows()]
         video_paths = [os.path.split(path) for path in video_paths]
 
         drop_idx = []
@@ -323,20 +323,20 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         else:
             raise ValueError()
 
-        video_info.drop(drop_idx, axis=0)
+        self.video_info.drop(drop_idx, axis=0)
 
         # Filtering videos based on length.
         drop_idx = []
         print('filter out too short videos ...')
-        for idx, row in tqdm(video_info.iterrows(), total=len(video_info)):
+        for idx, row in tqdm(self.video_info.iterrows(), total=len(self.video_info)):
             vpath, vlen = row
             if vlen - self.num_seq * self.seq_len * self.downsample <= 0:
                 drop_idx.append(idx)
 
         print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx),
-                                                                                                       len(video_info),
+                                                                                                       len(self.video_info),
                                                                                                        self.num_seq * self.seq_len * self.downsample))
-        self.video_info = video_info.drop(drop_idx, axis=0)
+        self.video_info = self.video_info.drop(drop_idx, axis=0)
 
         # Filtering videos based on presence of skeleton information.
         drop_idx = []
@@ -346,20 +346,20 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         sk_files_orientation = [f for f in skeleton_files if self.sk_orientation_pattern.match(f[1])]
         sk_files_magnitude = [f for f in skeleton_files if self.sk_magnitude_pattern.match(f[1])]
 
-        video_ids = [v_path for idx, (v_path, fc) in video_info.iterrows()]
+        video_ids = [v_path for idx, (v_path, fc) in self.video_info.iterrows()]
         video_ids = [self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group() for v_path in video_ids]
         sk_ids_orientation = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_orientation])
         sk_ids_magnitude = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_magnitude])
 
         print('check for available skeleton information ...')
-        for idx, v_id in tqdm(enumerate(video_ids), total=len(video_info)):
+        for idx, v_id in tqdm(enumerate(video_ids), total=len(self.video_info)):
             if v_id not in sk_ids_orientation or v_id not in sk_ids_magnitude:
                 drop_idx.append(idx)
 
         print("Discarded {} of {} videos due to missing skeleton information".format(len(drop_idx),
-                                                                                     len(video_info)))
+                                                                                     len(self.video_info)))
 
-        self.video_info = video_info.drop(drop_idx, axis=0)
+        self.video_info = self.video_info.drop(drop_idx, axis=0)
 
         print("Remaining videos in mode {}: {}".format(self.mode, len(self.video_info)))
 
