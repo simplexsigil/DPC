@@ -340,19 +340,20 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         # Filtering videos based on presence of skeleton information.
         drop_idx = []
-        self.skeleton_paths = glob.glob(os.path.join(skele_motion_root,
-                                                     "*.npz"))  # Listing all skeleton files, discarding videos without matching file.
+
+        # Listing all skeleton files, discarding videos without matching file.
+        self.skeleton_paths = glob.glob(os.path.join(skele_motion_root, "*.npz"))
         skeleton_files = [os.path.split(skf) for skf in self.skeleton_paths]
         sk_files_orientation = [f for f in skeleton_files if self.sk_orientation_pattern.match(f[1])]
         sk_files_magnitude = [f for f in skeleton_files if self.sk_magnitude_pattern.match(f[1])]
 
-        video_ids = [v_path for idx, (v_path, fc) in self.video_info.iterrows()]
-        video_ids = [self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group() for v_path in video_ids]
+        video_ids = [(idx, v_path) for idx, (v_path, fc) in self.video_info.iterrows()]
+        video_ids = [(idx, self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group()) for idx, v_path in video_ids]
         sk_ids_orientation = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_orientation])
         sk_ids_magnitude = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_magnitude])
 
         print('check for available skeleton information ...')
-        for idx, v_id in tqdm(enumerate(video_ids), total=len(self.video_info)):
+        for idx, v_id in tqdm(video_ids, total=len(self.video_info)):
             if v_id not in sk_ids_orientation or v_id not in sk_ids_magnitude:
                 drop_idx.append(idx)
 
