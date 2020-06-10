@@ -61,7 +61,7 @@ class DPC_RNN(nn.Module):
         )
 
         self.dpc_feature_conversion = nn.Sequential(
-            nn.Flatten(),
+            nn.Flatten(start_dim=2, end_dim=-1),
             nn.Linear(4096, self.crossm_vector_length),
         )
 
@@ -104,7 +104,7 @@ class DPC_RNN(nn.Module):
             nn.ReLU(),
             nn.Dropout(p=0.5),
             nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
-            nn.Softmax(dim=1)
+            # nn.Softmax(dim=1)
         )
 
         self.sk_network_pred = nn.Sequential(
@@ -151,6 +151,8 @@ class DPC_RNN(nn.Module):
 
         feature_com = feature_com.view(B, N, self.crossm_vector_length)
 
+        feature_raw = feature_com
+
         feature_com = feature_com.transpose(0, 1)  # GRUs take (N, B, features)
 
         # feature_ori_inf = feature_ori[:, N - self.pred_step::, :].contiguous()
@@ -177,7 +179,7 @@ class DPC_RNN(nn.Module):
         pred = pred.transpose(0, 1)
         del hidden
 
-        return pred, feature_com_inf
+        return pred, feature_com_inf, feature_raw
 
     def _forward_rgb(self, block_rgb):
         # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
@@ -186,14 +188,16 @@ class DPC_RNN(nn.Module):
         block_rgb = block_rgb.view(B * N, C, SL, H, W)
 
         # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
-        feature = self.backbone(block_rgb)  # (B * N, 256, 4, 4)
+        feature = self.backbone(block_rgb)  # (B * N, 256, 2, 4, 4)
         del block_rgb
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
+        feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size)
 
         feature = self.dpc_feature_conversion(feature)
-        feature = feature.view(B, N, self.crossm_vector_length)
+        #feature = feature.view(B, N, self.crossm_vector_length)
+        feature_raw = feature
 
         feature = feature.transpose(0, 1)
 
@@ -206,14 +210,12 @@ class DPC_RNN(nn.Module):
 
         #del feature_inf_all
 
-        feature = self.relu(feature)  # [0, +inf)
-
         # [B,N,D,6,6], [0, +inf)
         # feature = feature.view(B, N, self.param['feature_size'], self.last_size, self.last_size)
         # feature = feature.view(B, N, 2000)
 
         ### aggregate, predict future ###
-        _, hidden = self.rgb_agg(feature[0:N - self.pred_step, :, :].contiguous())  # Apply GRU on the features to predict future.
+        _, hidden = self.rgb_agg(self.relu(feature[0:N - self.pred_step, :, :].contiguous()))  # Apply GRU on the features to predict future.
         hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
 
         pred = []
@@ -230,27 +232,29 @@ class DPC_RNN(nn.Module):
 
         del hidden
 
-        return pred, feature_inf
+        return pred, feature_inf, feature_raw
 
     def forward(self, block_rgb, block_sk):
         # TODO: forward skelemotion data seperately on second stream.
         B = block_rgb.shape[0]
 
-        pred_sk, feature_inf_sk = self._forward_sk(block_sk)  # (B, N, D)
-        pred_rgb, feature_inf_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
+        pred_sk_o, feature_inf_sk, pred_sk = self._forward_sk(block_sk)  # (B, N, D)
+        pred_rgb_o, feature_inf_rgb, pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
 
-        (B, N, D) = pred_rgb.shape
+        (B, N, D) = pred_sk.shape
         # TODO: Now there shall be a second stream of processed skelemotion data. The ground truth for scoring is no longer the own future (after backbones).
 
         # The score is now calculated according to the other modality. for this we calculate the dot product of the feature vectors:
         pred_rgb = pred_rgb.contiguous().view(B*N,D)
         pred_sk = pred_sk.contiguous().view(B*N,D)
 
-        feature_inf_rgb = feature_inf_rgb.contiguous().view(B*N,D).transpose(0, 1)
-        feature_inf_sk = feature_inf_sk.contiguous().view(B*N,D).transpose(0, 1)
+        score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1)).view(B, N, B, N)
 
-        score_rgb_sk = torch.matmul(pred_rgb, feature_inf_sk).view(B, N, B, N)
-        score_sk_rgb = torch.matmul(pred_sk, feature_inf_rgb).view(B, N, B, N)
+        #feature_inf_rgb = feature_inf_rgb.contiguous().view(B*N,D).transpose(0, 1)
+        #feature_inf_sk = feature_inf_sk.contiguous().view(B*N,D).transpose(0, 1)
+
+        # score_rgb_sk = torch.matmul(pred_rgb, feature_inf_sk).view(B, N, B, N)
+        #score_sk_rgb = torch.matmul(pred_sk, feature_inf_rgb).view(B, N, B, N)
 
         if self.mask is None:
             # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
@@ -339,7 +343,7 @@ class DPC_RNN(nn.Module):
         #     # (B, N, LS * LS, B, N, LS * LS)
         #     self.mask = mask
 
-        return [score_rgb_sk, score_sk_rgb, self.mask]
+        return [score, self.mask]
 
     def _initialize_weights(self, module):
         for name, param in module.named_parameters():
