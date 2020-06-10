@@ -30,12 +30,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='dpc-rnn', type=str)
 parser.add_argument('--dataset', default='nturgbd', type=str)
-parser.add_argument('--seq_len', default=5, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
+parser.add_argument('--seq_len', default=15, type=int, help='number of frames in each video block')
+parser.add_argument('--num_seq', default=1, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=2, type=int)
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--batch_size', default=20, type=int)
-parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
+parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
@@ -250,7 +250,8 @@ def train(data_loader, model, optimizer, epoch):
         sk_seq = sk_seq.to(cuda)
 
         B = input_seq.size(0)
-        [score, mask_] = model(input_seq, sk_seq)
+
+        score = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
             if B > 2: input_seq = input_seq[0:2, :]
@@ -261,24 +262,16 @@ def train(data_loader, model, optimizer, epoch):
                                    iteration)
         del input_seq
 
-        if idx == 0:
-            target_, (B, N, B2, N2) = process_output(mask_)
-
-            # TODO: adapt logic for two stream network.
-            # score are two a 4d tensors: [B, N, B2, N2]
-            target_flattened = target_.view(B * N, B2 * N2)
-            target_flattened = target_flattened.double()
-            target_flattened = target_flattened.argmax(dim=1)
-
-        score_flattened = score.view(B * N, B2 * N2)
+        #score_flattened = score.view(B * N, B2 * N2)
         # score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
+        target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
 
-        loss = criterion(score_flattened, target_flattened)
+        loss = criterion(score, target_flattened)
         # loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
 
         # loss = (loss_rgb_sk + loss_sk_rgb) / 2
 
-        top1, top3, top5 = calc_topk_accuracy(score_flattened, target_flattened, (1, 3, 5))
+        top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 5))
 
         accuracy_list[0].update(top1.item(), B)
         accuracy_list[1].update(top3.item(), B)
@@ -287,7 +280,7 @@ def train(data_loader, model, optimizer, epoch):
         losses.update(loss.item(), B)
         accuracy.update(top1.item(), B)
 
-        del score_flattened
+        del score
 
         optimizer.zero_grad()
         loss.backward()
@@ -320,29 +313,22 @@ def validate(data_loader, model, epoch):
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
 
-            [score, mask_] = model(input_seq, sk_seq)
+            score = model(input_seq, sk_seq)
             del input_seq
 
-            if idx == 0:
-                target_, (B, N, B2, N2) = process_output(mask_)
-
-                # TODO: adapt logic for two stream network.
-                # score are two a 4d tensors: [B, N, B2, N2]
-                target_flattened = target_.view(B * N, B2 * N2)
-                target_flattened = target_flattened.double()
-                target_flattened = target_flattened.argmax(dim=1)
-
-            score_flattened = score.view(B * N, B2 * N2)
+            #score_flattened = score.view(B * N, B2 * N2)
             # score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
 
-            loss = criterion(score_flattened, target_flattened)
+            target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
+
+            loss = criterion(score, target_flattened)
             # loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
 
             # loss = (loss_rgb_sk + loss_sk_rgb) / 2
 
-            top1, top3, top5 = calc_topk_accuracy(score_flattened, target_flattened, (1, 3, 5))
+            top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 5))
 
-            del score_flattened
+            del score
 
             losses.update(loss.item(), B)
             accuracy.update(top1.item(), B)
