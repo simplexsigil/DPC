@@ -365,6 +365,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.unit_test: self.video_info = self.video_info.sample(32, random_state=666)
+        if self.mode == "val": self.video_info = self.video_info.sample(frac=0.1, random_state=666)
         # shuffle not necessary because use RandomSampler
 
     def idx_sampler(self, vlen, vpath):

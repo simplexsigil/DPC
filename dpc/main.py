@@ -34,12 +34,12 @@ parser.add_argument('--seq_len', default=5, type=int, help='number of frames in 
 parser.add_argument('--num_seq', default=6, type=int, help='number of video blocks')
 parser.add_argument('--pred_step', default=2, type=int)
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-parser.add_argument('--batch_size', default=4, type=int)
+parser.add_argument('--batch_size', default=20, type=int)
 parser.add_argument('--lr', default=1e-3, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=10, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
@@ -227,10 +227,10 @@ def process_output(mask):
     '''task mask as input, compute the target for contrastive loss'''
     # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
     # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, NP, SQ, B2, NS, _) = mask.size()  # [B, P, SQ, B, N, SQ]
+    (B, N, B2, N2) = mask.size()  # [B, P, SQ, B, N, SQ]
     target = mask == 1
     target.requires_grad = False
-    return target, (B, B2, NS, NP, SQ)
+    return target, (B, N, B2, N2)
 
 
 def train(data_loader, model, optimizer, epoch):
@@ -240,13 +240,17 @@ def train(data_loader, model, optimizer, epoch):
     model.train()
     global iteration
 
+    target_flattened = None
+    (B, N, B2, N2) = (None, None, None, None)
+
+
     for idx, (input_seq, sk_seq) in enumerate(data_loader):
         tic = time.time()
         input_seq = input_seq.to(cuda)
         sk_seq = sk_seq.to(cuda)
 
         B = input_seq.size(0)
-        [score_, mask_] = model(input_seq, sk_seq)
+        [score_rgb_sk_, score_sk_rgb_, mask_] = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
             if B > 2: input_seq = input_seq[0:2, :]
@@ -258,17 +262,23 @@ def train(data_loader, model, optimizer, epoch):
         del input_seq
 
         if idx == 0:
-            target_, (_, B2, NS, NP, SQ) = process_output(mask_)
+            target_, (B, N, B2, N2) = process_output(mask_)
 
-        # TODO: adapt logic for two stream network.
-        # score is a 6d tensor: [B, P, SQ, B, N, SQ]
-        score_flattened = score_.view(B * NP * SQ, B2 * NS * SQ)
-        target_flattened = target_.view(B * NP * SQ, B2 * NS * SQ)
-        target_flattened = target_flattened.double()
-        target_flattened = target_flattened.argmax(dim=1)
+            # TODO: adapt logic for two stream network.
+            # score are two a 4d tensors: [B, N, B2, N2]
+            target_flattened = target_.view(B * N, B2 * N2)
+            target_flattened = target_flattened.double()
+            target_flattened = target_flattened.argmax(dim=1)
 
-        loss = criterion(score_flattened, target_flattened)
-        top1, top3, top5 = calc_topk_accuracy(score_flattened, target_flattened, (1, 3, 5))
+        score_flattened_rgb_sk = score_rgb_sk_.view(B * N, B2 * N2)
+        score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
+
+        loss_rgb_sk = criterion(score_flattened_rgb_sk, target_flattened)
+        loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
+
+        loss = (loss_rgb_sk + loss_sk_rgb) / 2
+
+        top1, top3, top5 = calc_topk_accuracy(score_flattened_rgb_sk + score_flattened_sk_rgb, target_flattened, (1, 3, 5))
 
         accuracy_list[0].update(top1.item(), B)
         accuracy_list[1].update(top3.item(), B)
@@ -277,7 +287,7 @@ def train(data_loader, model, optimizer, epoch):
         losses.update(loss.item(), B)
         accuracy.update(top1.item(), B)
 
-        del score_
+        del score_flattened_rgb_sk, score_flattened_sk_rgb
 
         optimizer.zero_grad()
         loss.backward()
@@ -306,22 +316,34 @@ def validate(data_loader, model, epoch):
     model.eval()
 
     with torch.no_grad():
-        for idx, input_seq in tqdm(enumerate(data_loader), total=len(data_loader)):
+        for idx, (input_seq, sk_seq) in tqdm(enumerate(data_loader), total=len(data_loader)):
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
-            [score_, mask_] = model(input_seq)
+
+            [score_rgb_sk_, score_sk_rgb_, mask_] = model(input_seq, sk_seq)
             del input_seq
 
-            if idx == 0: target_, (_, B2, NS, NP, SQ) = process_output(mask_)
+            if idx == 0:
+                target_, (B, N, B2, N2) = process_output(mask_)
 
-            # [B, P, SQ, B, N, SQ]
-            score_flattened = score_.view(B * NP * SQ, B2 * NS * SQ)
-            target_flattened = target_.view(B * NP * SQ, B2 * NS * SQ)
-            target_flattened = target_flattened.double()
-            target_flattened = target_flattened.argmax(dim=1)
+                # TODO: adapt logic for two stream network.
+                # score are two a 4d tensors: [B, N, B2, N2]
+                target_flattened = target_.view(B * N, B2 * N2)
+                target_flattened = target_flattened.double()
+                target_flattened = target_flattened.argmax(dim=1)
 
-            loss = criterion(score_flattened, target_flattened)
-            top1, top3, top5 = calc_topk_accuracy(score_flattened, target_flattened, (1, 3, 5))
+            score_flattened_rgb_sk = score_rgb_sk_.view(B * N, B2 * N2)
+            score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
+
+            loss_rgb_sk = criterion(score_flattened_rgb_sk, target_flattened)
+            loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
+
+            loss = (loss_rgb_sk + loss_sk_rgb) / 2
+
+            top1, top3, top5 = calc_topk_accuracy(score_flattened_rgb_sk + score_flattened_sk_rgb, target_flattened,
+                                                  (1, 3, 5))
+
+            del score_flattened_rgb_sk, score_flattened_sk_rgb
 
             losses.update(loss.item(), B)
             accuracy.update(top1.item(), B)
@@ -371,7 +393,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=2,
+                                      num_workers=16,
                                       pin_memory=True,
                                       drop_last=True)
     elif mode == 'val':
@@ -379,7 +401,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=2,
+                                      num_workers=16,
                                       pin_memory=True,
                                       drop_last=True)
     print('"%s" dataset size: %d' % (mode, len(dataset)))

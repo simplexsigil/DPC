@@ -14,6 +14,12 @@ from convrnn import ConvGRU
 import torchvision.models as tm
 
 
+class Print(nn.Module):
+    def forward(self, x):
+        print(x.size())
+        return x
+
+
 class DPC_RNN(nn.Module):
     '''DPC with RNN'''
 
@@ -33,12 +39,14 @@ class DPC_RNN(nn.Module):
         self.param['num_layers'] = 1  # param for GRU
         self.param['hidden_size'] = self.param['feature_size']  # param for GRU
 
+        self.crossm_vector_length = 100
+
         # self.agg = ConvGRU(input_size=self.param['feature_size'],
         #                   hidden_size=self.param['hidden_size'],
         #                   kernel_size=1,
         #                   num_layers=self.param['num_layers'])
 
-        self.rgb_agg = torch.nn.GRU(input_size=2000, hidden_size=2000, num_layers=self.param['num_layers'])
+        self.rgb_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
 
         # self.rgb_network_pred = nn.Sequential(
         #     nn.Conv2d(self.param['feature_size'], self.param['feature_size'], kernel_size=1, padding=0),
@@ -47,15 +55,14 @@ class DPC_RNN(nn.Module):
         # )
 
         self.rgb_network_pred = nn.Sequential(
-            nn.Linear(in_features=2000, out_features=2000),  # Make sure, output has correct size
+            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
             nn.ReLU(inplace=True),
-            nn.Linear(in_features=2000, out_features=2000),
+            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
         )
 
         self.dpc_feature_conversion = nn.Sequential(
-            nn.Linear(4096, 2000),
-            nn.ReLU(inplace=True),
-            nn.Linear(2000, 2000),
+            nn.Flatten(),
+            nn.Linear(4096, self.crossm_vector_length),
         )
 
         # TODO: add second stream network which is applied to skelemotion data.
@@ -76,13 +83,34 @@ class DPC_RNN(nn.Module):
 
         # TODO: Revise
         # A standard Resnet uses 3 input channels.
-        self.sk_backbone_mag = tm.ResNet(tm.resnet.BasicBlock, [2, 2, 2, 2], num_classes=1000)  # Resnet 18
-        self.sk_backbone_ori = tm.ResNet(tm.resnet.BasicBlock, [2, 2, 2, 2], num_classes=1000)
+        # self.sk_backbone_mag = tm.ResNet(tm.resnet.BasicBlock, [2, 2, 2, 2], num_classes=1000)  # Resnet 18
+        # self.sk_backbone_ori = tm.ResNet(tm.resnet.BasicBlock, [2, 2, 2, 2], num_classes=1000)
+
+        self.skele_motion_backbone = nn.Sequential(
+            nn.Conv2d(in_channels=6, out_channels=64, kernel_size=(3, 5), stride=1),
+            #nn.MaxPool2d(3, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=(2, 5)),
+            #nn.MaxPool2d(3, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(2, 5)),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 2)),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=(1, 3)),
+            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 2)),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(in_features=1792, out_features=self.crossm_vector_length),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),
+            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
+            nn.Softmax(dim=1)
+        )
 
         self.sk_network_pred = nn.Sequential(
-            nn.Linear(in_features=2000, out_features=2000),  # Make sure, output has correct size
+            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),  # Make sure, output has correct size
             nn.ReLU(inplace=True),
-            nn.Linear(in_features=2000, out_features=2000),
+            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
             # Make sure, output has correct size (vector length 10000)
         )
 
@@ -90,7 +118,7 @@ class DPC_RNN(nn.Module):
         # Concatenate and forward with GRU
         # Split vectors in two single vectors and use prediction network.
         # Alternativ: another conv GRU
-        self.sk_agg = torch.nn.GRU(input_size=2000, hidden_size=2000, num_layers=self.param['num_layers'])
+        self.sk_agg = torch.nn.GRU(input_size=self.crossm_vector_length, hidden_size=self.crossm_vector_length, num_layers=self.param['num_layers'])
 
         self.mask = None
         self.relu = nn.ReLU(inplace=False)
@@ -99,24 +127,29 @@ class DPC_RNN(nn.Module):
         self._initialize_weights(self.sk_network_pred)
         self._initialize_weights(self.rgb_network_pred)
         self._initialize_weights(self.dpc_feature_conversion)
+        self._initialize_weights(self.skele_motion_backbone)
 
     def _forward_sk(self, block_sk):
         (B, N, C, T, J) = block_sk.shape
 
         block_sk = block_sk.view(B * N, C, T, J)  # Forward each block individually like a batch input.
 
-        block_ori = block_sk[:, 0:3, :, :]
-        block_mag = block_sk[:, 3:, :, :]
+        feature_com = self.skele_motion_backbone(block_sk)
 
-        feature_ori = self.sk_backbone_ori(block_ori)
-        feature_mag = self.sk_backbone_mag(block_mag)
+        # block_ori = block_sk[:, 0:3, :, :]
+        # block_mag = block_sk[:, 3:, :, :]
+
+        # feature_ori = self.sk_backbone_ori(block_ori)
+        # feature_mag = self.sk_backbone_mag(block_mag)
 
         # feature_ori = F.avg_pool2d(feature_ori) No average pooling, since we do not have dense features in this stream.
 
-        feature_ori = feature_ori.view(B, N, 1000)
-        feature_mag = feature_mag.view(B, N, 1000)
+        # feature_ori = feature_ori.view(B, N, 1000)
+        # feature_mag = feature_mag.view(B, N, 1000)
 
-        feature_com = torch.cat((feature_ori, feature_mag), -1)
+        # feature_com = torch.cat((feature_ori, feature_mag), -1)
+
+        feature_com = feature_com.view(B, N, self.crossm_vector_length)
 
         feature_com = feature_com.transpose(0, 1)  # GRUs take (N, B, features)
 
@@ -159,8 +192,8 @@ class DPC_RNN(nn.Module):
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
 
-        feature = self.dpc_feature_conversion(feature.flatten(1, -1))
-        feature = feature.view(B, N, 2000)
+        feature = self.dpc_feature_conversion(feature)
+        feature = feature.view(B, N, self.crossm_vector_length)
 
         feature = feature.transpose(0, 1)
 
