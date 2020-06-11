@@ -11,7 +11,7 @@ from augmentation import *
 from tqdm import tqdm
 import re
 from typing import List
-
+from sklearn.model_selection import train_test_split
 
 def pil_loader(path):
     with open(path, 'rb') as f:
@@ -243,7 +243,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  mode='train',
                  transform=None,
                  seq_len=10,
-                 num_seq=5,
+                 num_seq=1,
                  downsample=3,
                  epsilon=5,
                  unit_test=False,
@@ -251,7 +251,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  return_label=False,
                  nturgbd_video_info=None,
                  skele_motion_root=None,
-                 split_mode="cross-setup"):
+                 split_mode="perc",
+                 split_frac=0.1):
         self.mode = mode
         self.transform = transform
         self.seq_len = seq_len
@@ -317,6 +318,16 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
             else:
                 raise ValueError()
 
+        elif self.split_mode  == "perc":
+            train_inf, test_inf = train_test_split(self.video_info, test_size=split_frac, random_state=42)
+            if mode == "train":
+                self.video_info = train_inf
+
+            elif mode == "val":
+                self.video_info = test_inf
+            else:
+                raise ValueError()
+
         elif self.split_mode == "all":
             drop_idx = []  # For self supervised learning. Train and val contain all videos.
 
@@ -366,7 +377,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.unit_test: self.video_info = self.video_info.sample(32, random_state=666)
-        if self.mode == "val": self.video_info = self.video_info.sample(frac=0.1, random_state=666)
+        if self.mode == "val": self.video_info = self.video_info.sample(frac=0.33, random_state=666)
         # shuffle not necessary because use RandomSampler
 
     def idx_sampler(self, vlen, vpath):

@@ -10,7 +10,7 @@ from tqdm import tqdm
 plt.switch_backend('agg')
 
 
-def extract_video_opencv(v_path, f_root, dim=240):
+def extract_video_opencv(v_path, f_root, dim=240, force=False):
     '''v_path: single video path;
        f_root: root to store frames'''
     v_class = v_path.split('/')[-2]
@@ -30,7 +30,7 @@ def extract_video_opencv(v_path, f_root, dim=240):
 
     nb_frames = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    if preexisted is True:
+    if preexisted is True and force is False:
         imgs = glob.glob(os.path.join(out_dir, '*.jpg'))
         if abs(len(imgs) - nb_frames) < 2:
             print("Skipping extracted video {}".format(v_name))
@@ -85,7 +85,7 @@ def main_UCF101(v_root, f_root):
         Parallel(n_jobs=32)(delayed(extract_video_opencv)(p, f_root) for p in tqdm(v_paths, total=len(v_paths)))
 
 
-def main_HMDB51(v_root, f_root):
+def main_HMDB51(v_root, f_root, force=False):
     print('extracting HMDB51 ... ')
     print('extracting videos from %s' % v_root)
     print('frame save to %s' % f_root)
@@ -95,7 +95,7 @@ def main_HMDB51(v_root, f_root):
     for i, j in tqdm(enumerate(v_act_root), total=len(v_act_root)):
         v_paths = glob.glob(os.path.join(j, '*.avi'))
         v_paths = sorted(v_paths)
-        Parallel(n_jobs=32)(delayed(extract_video_opencv)(p, f_root) for p in tqdm(v_paths, total=len(v_paths)))
+        Parallel(n_jobs=32)(delayed(extract_video_opencv)(p, f_root, force=force) for p in tqdm(v_paths, total=len(v_paths)))
 
 
 def main_kinetics400(v_root, f_root, dim=150):  # Video root for reading videos, frame root for writing
@@ -161,11 +161,11 @@ if __name__ == '__main__':
     # main_nturgbd(v_root=os.path.expanduser('~/datasets/nturgbd/rgb'),
     #              f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame'))
 
-    main_UCF101(v_root=os.path.expanduser('~/datasets/UCF101/UCF-101'),
-                f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'))
+   # main_UCF101(v_root=os.path.expanduser('~/datasets/UCF101/UCF-101'),
+   #             f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'))
 
-    # main_HMDB51(v_root=os.path.expanduser('~/datasets/HMDB51/hmdb51'),
-    #             f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'))
+     main_HMDB51(v_root=os.path.expanduser('~/datasets/HMDB51/hmdb51'),
+                 f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'), force=True)
 
 # main_kinetics400(v_root='your_path/Kinetics400/videos',
 #                  f_root='your_path/Kinetics400/frame', dim=150)

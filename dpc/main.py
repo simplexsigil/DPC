@@ -7,7 +7,8 @@ from tensorboardX import SummaryWriter
 
 plt.switch_backend('agg')
 
-sys.path.insert(0, '../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
+sys.path.insert(0,
+                '../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
 sys.path.insert(0, '../eval')
 sys.path.insert(0, '../backbone')
 
@@ -16,6 +17,7 @@ from model_3d import *
 from resnet_2d3d import neq_load_customized
 from augmentation import *
 from utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
+from datetime import datetime
 
 import torch
 import torch.optim as optim
@@ -27,26 +29,27 @@ import torchvision.utils as vutils
 # torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='dpc-rnn', type=str)
+parser.add_argument('--gpu', default=[0], type=int, nargs='+')
+parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
 parser.add_argument('--dataset', default='nturgbd', type=str)
-parser.add_argument('--seq_len', default=15, type=int, help='number of frames in each video block')
-parser.add_argument('--num_seq', default=1, type=int, help='number of video blocks')
-parser.add_argument('--pred_step', default=2, type=int)
+parser.add_argument('--model', default='skelcont', type=str)
+parser.add_argument('--rgb_net', default='resnet18', type=str)
+parser.add_argument('--img_dim', default=128, type=int)
+parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
+parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--batch_size', default=20, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
-parser.add_argument('--prefix', default='tmp', type=str, help='prefix of checkpoint filename')
+parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--img_dim', default=128, type=int)
+parser.add_argument('--loader_workers', default=32, type=int,
+                    help='number of data loader workers to pre load batch data.')
 parser.add_argument('--train_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),
                     type=str)
@@ -58,7 +61,11 @@ parser.add_argument('--nturgbd-video-info',
                     type=str)
 parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/datasets/nturgbd/skele-motion"),
                     type=str)
-parser.add_argument('--split-mode', default="all", type=str)
+parser.add_argument('--split-mode', default="perc", type=str)
+parser.add_argument('--split-test-frac', default=0.1, type=float)
+
+global start_time
+global stop_time
 
 
 def main():
@@ -66,31 +73,31 @@ def main():
     np.random.seed(0)
     global args;
     args = parser.parse_args()
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ[
+        "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
-    
-    
-    print ('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
-    print ('Available device count: {}'.format(torch.cuda.device_count()))
 
-    args.gpu = list(range(torch.cuda.device_count()))  # Really weird: In Pytorch 1.2, the device ids start from 0 on the visible devices.
+    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
+    print('Available device count: {}'.format(torch.cuda.device_count()))
 
-    print("Note: At least in Pytorch 1.2, device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
+    args.gpu = list(range(torch.cuda.device_count()))  # The device ids restart from 0 on the visible devices.
+
+    print("Note: Device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
 
     for i in args.gpu:
         print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
     print("Cuda is available: {}".format(torch.cuda.is_available()))
     global cuda;
     cuda = torch.device('cuda')
-    
+
     ### dpc model ###
-    if args.model == 'dpc-rnn':
-        model = DPC_RNN(sample_size=args.img_dim,
-                        num_seq=args.num_seq,
-                        seq_len=args.seq_len,
-                        network=args.net,
-                        pred_step=args.pred_step)
-    else: raise ValueError('wrong model!')
+    if args.model == 'skelcont':
+        model = SkeleContrast(img_dim=args.img_dim,
+                              seq_len=args.seq_len,
+                              network=args.rgb_net,
+                              representation_size=args.representation_size)
+    else:
+        raise ValueError('wrong model!')
 
     # Data Parallel uses a master device (default gpu 0) and performs scatter gather operations on batches and resulting gradients.
     model = nn.DataParallel(model)  # Distributes batches on mutiple devices to train model in parallel automatically.
@@ -102,7 +109,8 @@ def main():
     if args.train_what == 'last':
         for name, param in model.module.resnet.named_parameters():
             param.requires_grad = False
-    else: pass  # train all layers
+    else:
+        pass  # train all layers
 
     print('\n===========Check Grad============')
     for name, param in model.named_parameters():
@@ -130,7 +138,8 @@ def main():
             model.load_state_dict(checkpoint['state_dict'])
             if not args.reset_lr:  # if didn't reset lr, load old optimizer
                 optimizer.load_state_dict(checkpoint['optimizer'])
-            else: print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
+            else:
+                print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
             print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
         else:
             print("[Warning] no checkpoint found at '{}'".format(args.resume))
@@ -175,22 +184,29 @@ def main():
             Normalize()
         ])
 
-
     train_loader = get_data(transform, 'train')
     val_loader = get_data(transform, 'val')
 
     # setup tools
-    global de_normalize;
+    global de_normalize
     de_normalize = denorm()
-    global img_path;
+
+    global img_path
     img_path, model_path = set_path(args)
+
     global writer_train
+    time_str = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+    tboard_str = '{time}-{mode}-m={args.model}-bs={args.batch_size}-sl={args.seq_len}-img={args.img_dim}-' \
+                 'ds={args.ds}-rgb_net={args.rgb_net}-rs={args.representation_size}'
+    val_name = tboard_str.format(args=args, mode="val", time=time_str)
+    train_name = tboard_str.format(args=args, mode="train", time=time_str)
+
     try:  # old version
-        writer_val = SummaryWriter(log_dir=os.path.join(img_path, 'val'))
-        writer_train = SummaryWriter(log_dir=os.path.join(img_path, 'train'))
+        writer_val = SummaryWriter(log_dir=os.path.join(img_path, val_name))
+        writer_train = SummaryWriter(log_dir=os.path.join(img_path, train_name))
     except:  # v1.7
-        writer_val = SummaryWriter(logdir=os.path.join(img_path, 'val'))
-        writer_train = SummaryWriter(logdir=os.path.join(img_path, 'train'))
+        writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
+        writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
@@ -210,10 +226,10 @@ def main():
         writer_val.add_scalar('accuracy/top5', val_accuracy_list[2], epoch)
 
         # save check_point
-        is_best = val_acc > best_acc;
+        is_best = val_acc > best_acc
         best_acc = max(val_acc, best_acc)
         save_checkpoint({'epoch': epoch + 1,
-                         'net': args.net,
+                         'net': args.rgb_net,
                          'state_dict': model.state_dict(),
                          'best_acc': best_acc,
                          'optimizer': optimizer.state_dict(),
@@ -223,53 +239,53 @@ def main():
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def process_output(mask):
-    '''task mask as input, compute the target for contrastive loss'''
-    # dot product is computed in parallel gpus, so get less easy neg, bounded by batch size in each gpu'''
-    # mask meaning: -2: omit, -1: temporal neg (hard), 0: easy neg, 1: pos, -3: spatial neg
-    (B, N, B2, N2) = mask.size()  # [B, P, SQ, B, N, SQ]
-    target = mask == 1
-    target.requires_grad = False
-    return target, (B, N, B2, N2)
-
-
 def train(data_loader, model, optimizer, epoch):
+    data_loading_times = []
+    cuda_transfer_times = []
+    calculation_times = []
     losses = AverageMeter()
     accuracy = AverageMeter()
     accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     model.train()
     global iteration
+    global start_time
+    global stop_time
 
-    target_flattened = None
-    (B, N, B2, N2) = (None, None, None, None)
-
-
+    start_time = time.perf_counter()
     for idx, (input_seq, sk_seq) in enumerate(data_loader):
-        tic = time.time()
+        stop_time = time.perf_counter()  # Timing data loading
+        data_loading_times.append(stop_time - start_time)
+
+        start_time = time.perf_counter()  # Timing cuda transfer
+
         input_seq = input_seq.to(cuda)
         sk_seq = sk_seq.to(cuda)
+
+        stop_time = time.perf_counter()
+
+        cuda_transfer_times.append(stop_time - start_time)
+
+        start_time = time.perf_counter()  # Timing calculation
+
+        tic = time.time()
 
         B = input_seq.size(0)
 
         score = model(input_seq, sk_seq)
         # visualize
-        if (iteration == 0) or (iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
+        if (iteration == 0) or (
+                iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
             if B > 2: input_seq = input_seq[0:2, :]
             writer_train.add_image('input_seq',
                                    de_normalize(vutils.make_grid(
                                        input_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim, args.img_dim),
-                                       nrow=args.num_seq * args.seq_len)),
+                                       nrow=args.seq_len)),
                                    iteration)
-        del input_seq
+        del input_seq, sk_seq
 
-        #score_flattened = score.view(B * N, B2 * N2)
-        # score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
         target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
 
         loss = criterion(score, target_flattened)
-        # loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
-
-        # loss = (loss_rgb_sk + loss_sk_rgb) / 2
 
         top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 5))
 
@@ -280,13 +296,15 @@ def train(data_loader, model, optimizer, epoch):
         losses.update(loss.item(), B)
         accuracy.update(top1.item(), B)
 
-        del score
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        del loss
+        del score, target_flattened, loss
+
+        stop_time = time.perf_counter()
+
+        calculation_times.append(stop_time - start_time)
 
         if idx % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
@@ -299,6 +317,12 @@ def train(data_loader, model, optimizer, epoch):
 
             iteration += 1
 
+        start_time = time.perf_counter()
+
+    print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
+        sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
+        sum(calculation_times) / len(calculation_times)
+    ))
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
@@ -314,24 +338,19 @@ def validate(data_loader, model, epoch):
             B = input_seq.size(0)
 
             score = model(input_seq, sk_seq)
-            del input_seq
 
-            #score_flattened = score.view(B * N, B2 * N2)
-            # score_flattened_sk_rgb = score_sk_rgb_.view(B * N, B2 * N2)
+            del input_seq, sk_seq
 
             target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
 
             loss = criterion(score, target_flattened)
-            # loss_sk_rgb = criterion(score_flattened_sk_rgb, target_flattened)
-
-            # loss = (loss_rgb_sk + loss_sk_rgb) / 2
 
             top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 5))
 
-            del score
-
             losses.update(loss.item(), B)
             accuracy.update(top1.item(), B)
+
+            del score, target_flattened, loss
 
             accuracy_list[0].update(top1.item(), B)
             accuracy_list[1].update(top3.item(), B)
@@ -363,7 +382,6 @@ def get_data(transform, mode='train'):
         dataset = NTURGBD_3D(mode=mode,
                              transform=transform,
                              seq_len=args.seq_len,
-                             num_seq=args.num_seq,
                              downsample=args.ds,
                              nturgbd_video_info=args.nturgbd_video_info,
                              skele_motion_root=args.nturgbd_skele_motion,
@@ -378,7 +396,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=16,
+                                      num_workers=args.loader_workers,
                                       pin_memory=True,
                                       drop_last=True)
     elif mode == 'val':
@@ -386,7 +404,7 @@ def get_data(transform, mode='train'):
                                       batch_size=args.batch_size,
                                       sampler=sampler,
                                       shuffle=False,
-                                      num_workers=16,
+                                      num_workers=args.loader_workers,
                                       pin_memory=True,
                                       drop_last=True)
     print('"%s" dataset size: %d' % (mode, len(dataset)))
@@ -394,15 +412,14 @@ def get_data(transform, mode='train'):
 
 
 def set_path(args):
-    if args.resume: exp_path = os.path.dirname(os.path.dirname(args.resume))
+    if args.resume:
+        exp_path = os.path.dirname(os.path.dirname(args.resume))
     else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_lr{1}_seq{args.num_seq}_pred{args.pred_step}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}{2}'.format(
-            'r%s' % args.net[6::], \
-            args.old_lr if args.old_lr is not None else args.lr, \
-            '_pt=%s' % args.pretrain.replace('/', '-') if args.pretrain else '', \
-            args=args)
+        exp_path = '{time}_training_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
+bs{args.batch_size}_len{args.seq_len}_ds{args.ds}_\
+train-{args.train_what}'.format(
+            'r%s' % args.rgb_net[6::],
+            args=args, time=datetime.now().strftime("%Y%m%d%H%M%S"))
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
     if not os.path.exists(img_path): os.makedirs(img_path)

@@ -328,8 +328,13 @@ def neq_load_customized(model, pretrained_dict):
     # pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
     del pretrained_dict
     model_dict.update(tmp)
-    del tmp
     model.load_state_dict(model_dict)
+
+    print('\n=======Successfully loaded weights======')
+    for k, v in tmp.items():
+        print(k)
+    del tmp
+    print('===================================\n')
     return model
 
 
