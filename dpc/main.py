@@ -30,7 +30,7 @@ import torchvision.utils as vutils
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
-parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=1, type=int, help='number of total epochs to run')
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
 parser.add_argument('--rgb_net', default='resnet18', type=str)
@@ -48,7 +48,7 @@ parser.add_argument('--print_freq', default=5, type=int, help='frequency of prin
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--loader_workers', default=32, type=int,
+parser.add_argument('--loader_workers', default=16, type=int,
                     help='number of data loader workers to pre load batch data.')
 parser.add_argument('--train_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),

@@ -266,7 +266,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         # Each file/folder name in both datasets is in the format of SsssCcccPpppRrrrAaaa (e.g., S001C002P003R002A013),
         # in which sss is the setup number, ccc is the camera ID, ppp is the performer (subject) ID,
         # rrr is the replication number (1 or 2), and aaa is the action class label.
-        self.nturgbd_id_pattern = re.compile(r"(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")
+        self.nturgbd_id_pattern = re.compile(r".*(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")
         # A pattern object to recognize nturgbd action ids.
         self.action_code_pattern = re.compile(r"S\d{3}C\d{3}P\d{3}R\d{3}A(\d{3})")
         self.setup_pattern = re.compile(r"S(\d{3})C\d{3}P\d{3}R\d{3}A\d{3}")
@@ -279,6 +279,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         # Careful: action ids start from 0 here, but the ids in the file names start from 1.
         self.action_dict_encode = {label: act_id for act_id, label in enumerate(nturgbd_action_labels)}
         self.action_dict_decode = {act_id: label for act_id, label in enumerate(nturgbd_action_labels)}
+
+        self.video_info_skeletons = {}
 
         self.video_info = pd.read_csv(nturgbd_video_info, header=None)
         video_paths = [vid_inf for idx, (vid_inf, fc) in self.video_info.iterrows()]
@@ -364,9 +366,15 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         sk_ids_magnitude = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_magnitude])
 
         print('check for available skeleton information ...')
+        skeleton_path_ids = [{"id": self.nturgbd_id_pattern.match(sk_path).group(1), "path": sk_path} for sk_path in self.skeleton_paths]
+        skeleton_path_ids = pd.DataFrame(skeleton_path_ids)
+
         for idx, v_id in tqdm(video_ids, total=len(self.video_info)):
             if v_id not in sk_ids_orientation or v_id not in sk_ids_magnitude:
                 drop_idx.append(idx)
+            else:
+                v_path = self.video_info.loc[idx][0]
+                self.video_info_skeletons[v_path] = list(skeleton_path_ids.loc[skeleton_path_ids["id"] == v_id]["path"])
 
         print("Discarded {} of {} videos due to missing skeleton information".format(len(drop_idx),
                                                                                      len(self.video_info)))
@@ -407,10 +415,10 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         vpath, vlen = self.video_info.iloc[index]
         items = self.idx_sampler(vlen, vpath)
 
-        video_id = self.nturgbd_id_pattern.match(os.path.split(vpath)[1]).group()
+        # video_id = self.nturgbd_id_pattern.match(os.path.split(vpath)[1]).group()
 
         # TODO: This might be time consuming for lots of skeleton files (alternative building dictionary in constructor)
-        sk_paths = [p for p in self.skeleton_paths if re.match(video_id, os.path.split(p)[1])]
+        sk_paths = self.video_info_skeletons[vpath]
 
         idx_block, vpath = items
         assert idx_block.shape == (self.num_seq, self.seq_len)
