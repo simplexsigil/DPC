@@ -377,7 +377,11 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.unit_test: self.video_info = self.video_info.sample(32, random_state=666)
-        if self.mode == "val": self.video_info = self.video_info.sample(frac=0.33, random_state=666)
+        if self.mode == "val": 
+            if len(self.video_info) > 500:
+                print("Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " + 
+                "it only reduces the samples used for validation in training among the val split." )
+                self.video_info = self.video_info.sample(n=500, random_state=666)
         # shuffle not necessary because use RandomSampler
 
     def idx_sampler(self, vlen, vpath):
