@@ -13,6 +13,7 @@ import re
 from typing import List
 from sklearn.model_selection import train_test_split
 
+
 def pil_loader(path):
     with open(path, 'rb') as f:
         with Image.open(f) as img:
@@ -320,7 +321,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
             else:
                 raise ValueError()
 
-        elif self.split_mode  == "perc":
+        elif self.split_mode == "perc":
             train_inf, test_inf = train_test_split(self.video_info, test_size=split_frac, random_state=42)
             if mode == "train":
                 self.video_info = train_inf
@@ -347,7 +348,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                 drop_idx.append(idx)
 
         print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(len(drop_idx),
-                                                                                                       len(self.video_info),
+                                                                                                       len(
+                                                                                                           self.video_info),
                                                                                                        self.num_seq * self.seq_len * self.downsample))
         self.video_info = self.video_info.drop(drop_idx, axis=0)
 
@@ -361,12 +363,16 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         sk_files_magnitude = [f for f in skeleton_files if self.sk_magnitude_pattern.match(f[1])]
 
         video_ids = [(idx, v_path) for idx, (v_path, fc) in self.video_info.iterrows()]
-        video_ids = [(idx, self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group()) for idx, v_path in video_ids]
+        video_ids = [(idx, self.nturgbd_id_pattern.match(os.path.split(v_path)[1]).group()) for idx, v_path in
+                     video_ids]
         sk_ids_orientation = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_orientation])
         sk_ids_magnitude = set([self.nturgbd_id_pattern.match(sk_f[1]).group() for sk_f in sk_files_magnitude])
 
         print('check for available skeleton information ...')
-        skeleton_path_ids = [{"id": self.nturgbd_id_pattern.match(sk_path).group(1), "path": sk_path} for sk_path in self.skeleton_paths]
+        skeleton_path_ids = [{"id": self.nturgbd_id_pattern.match(sk_path).group(1), "path": sk_path} for sk_path in
+                             self.skeleton_paths]
+        for elem in skeleton_path_ids:
+            elem["id"] = self._id_to_int(elem["id"])
         skeleton_path_ids = pd.DataFrame(skeleton_path_ids)
 
         for idx, v_id in tqdm(video_ids, total=len(self.video_info)):
@@ -374,7 +380,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                 drop_idx.append(idx)
             else:
                 v_path = self.video_info.loc[idx][0]
-                self.video_info_skeletons[v_path] = list(skeleton_path_ids.loc[skeleton_path_ids["id"] == v_id]["path"])
+                self.video_info_skeletons[v_path] = list(
+                    skeleton_path_ids.loc[skeleton_path_ids["id"] == self._id_to_int(v_id)]["path"])
 
         print("Discarded {} of {} videos due to missing skeleton information".format(len(drop_idx),
                                                                                      len(self.video_info)))
@@ -385,12 +392,17 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.unit_test: self.video_info = self.video_info.sample(32, random_state=666)
-        if self.mode == "val": 
+        if self.mode == "val":
             if len(self.video_info) > 500:
-                print("Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " + 
-                "it only reduces the samples used for validation in training among the val split." )
+                print(
+                    "Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " +
+                    "it only reduces the samples used for validation in training among the val split.")
                 self.video_info = self.video_info.sample(n=500, random_state=666)
         # shuffle not necessary because use RandomSampler
+
+    @staticmethod
+    def _id_to_int(nturgbd_id):
+        return int("".join([n for n in nturgbd_id if n.isdigit()]))
 
     def idx_sampler(self, vlen, vpath):
         '''sample index from a video'''
