@@ -14,6 +14,7 @@ from model_3d_lc import *
 from resnet_2d3d import neq_load_customized
 from augmentation import *
 from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, denorm, calc_accuracy
+from datetime import datetime
 
 import torch
 import torch.optim as optim
@@ -27,26 +28,30 @@ parser.add_argument('--net', default='resnet18', type=str)
 parser.add_argument('--model', default='lc_cont', type=str)
 parser.add_argument('--dataset', default='hmdb51', type=str)
 parser.add_argument('--split', default=1, type=int)
-parser.add_argument('--seq_len', default=15, type=int)
+parser.add_argument('--seq_len', default=30, type=int)
 parser.add_argument('--num_seq', default=1, type=int)
 parser.add_argument('--num_class', default=51, type=int)
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--batch_size', default=40, type=int)
-parser.add_argument('--lr', default=1e-3, type=float)
+parser.add_argument('--representation_size', default=256, type=int)
+parser.add_argument('--batch_size', default=20, type=int)
+parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str)
-parser.add_argument('--pretrain', default='/home/david/workspaces/cvhci/DPC/dpc/log_tmp/nturgbd-128_r18_dpc-rnn_bs20_lr0.0001_seq1_pred2_len15_ds1_train-all/model/model_best_epoch129.pth.tar', type=str)
+parser.add_argument('--pretrain', default='/home/david/workspaces/cvhci/DPC/dpc/20200613221038_training_skelcont/nturgbd-128_r18_skelcont_bs40_len30_ds1_train-all/model/model_best_epoch36.pth.tar', type=str)
 parser.add_argument('--test', default='', type=str)
 parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--print_freq', default=5, type=int)
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
-parser.add_argument('--train_what', default='ft', type=str, help='Train what parameters?')
+parser.add_argument('--train_what', default='last_only', type=str, help='Train what parameters?')
 parser.add_argument('--prefix', default='tmp_cont', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--num_workers', default=16, type=int)
+
+global start_time
+global stop_time
 
 
 def main():
@@ -93,7 +98,8 @@ def main():
                                    seq_len=args.seq_len,
                                    network=args.net,
                                    num_class=args.num_class,
-                                   dropout=args.dropout
+                                   dropout=args.dropout,
+                                   crossm_vector_length=args.representation_size
                                    )
     else:
         raise ValueError('wrong model!')
@@ -114,6 +120,17 @@ def main():
                 params.append({'params': param, 'lr': args.lr / 10})
             else:
                 params.append({'params': param})
+    elif args.train_what == 'last_only':
+        print('=> only train last layers')
+        params = []
+        print("=======Only training the following parameters:=======")
+        for name, param in model.module.named_parameters():
+            if ('resnet' in name) or ('rnn' in name):
+                pass
+            else:
+                params.append({'params': param})
+                print(name)
+
     else:
         pass  # train all layers
 
@@ -259,15 +276,36 @@ def main():
 
 
 def train(data_loader, model, optimizer, epoch):
+    data_loading_times = []
+    cuda_transfer_times = []
+    calculation_times = []
     losses = AverageMeter()
     accuracy = AverageMeter()
     model.train()
     global iteration
+    global start_time
+    global stop_time
+
+    start_time = time.perf_counter()
 
     for idx, (input_seq, target) in enumerate(data_loader):
         tic = time.time()
+
+        stop_time = time.perf_counter()  # Timing data loading
+        data_loading_times.append(stop_time - start_time)
+
+        start_time = time.perf_counter()  # Timing cuda transfer
+
         input_seq = input_seq.to(cuda)
+
         target = target.to(cuda)
+
+        stop_time = time.perf_counter()
+
+        cuda_transfer_times.append(stop_time - start_time)
+
+        start_time = time.perf_counter()  # Timing calculation
+
         B = input_seq.size(0)
         output = model(input_seq)
 
@@ -288,14 +326,18 @@ def train(data_loader, model, optimizer, epoch):
         loss = criterion(output, target)
         acc = calc_accuracy(output, target)
 
-        del target
-
         losses.update(loss.item(), B)
         accuracy.update(acc.item(), B)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        del target, loss
+
+        stop_time = time.perf_counter()
+
+        calculation_times.append(stop_time - start_time)
 
         if idx % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
@@ -315,6 +357,13 @@ def train(data_loader, model, optimizer, epoch):
             writer_train.add_scalar('local/accuracy', accuracy.val, iteration)
 
             iteration += 1
+
+            start_time = time.perf_counter()
+
+    print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
+        sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
+        sum(calculation_times) / len(calculation_times)
+    ))
 
     return losses.local_avg, accuracy.local_avg
 
@@ -357,7 +406,7 @@ def test(data_loader, model):
             target = target.to(cuda)
             B = input_seq.size(0)
             input_seq = input_seq.squeeze(0)  # squeeze the '1' batch dim
-            output, _ = model(input_seq)
+            output = model(input_seq)
             del input_seq
             top1, top5 = calc_topk_accuracy(torch.mean(
                 torch.mean(
@@ -440,14 +489,14 @@ def set_path(args):
     if args.resume:
         exp_path = os.path.dirname(os.path.dirname(args.resume))
     else:
-        exp_path = 'log_{args.prefix}/{args.dataset}-{args.img_dim}-\
+        exp_path = '{time}_log_{args.prefix}/{args.dataset}-{args.img_dim}-\
 sp{args.split}_{0}_{args.model}_bs{args.batch_size}_\
 lr{1}_wd{args.wd}_ds{args.ds}_seq{args.num_seq}_len{args.seq_len}_\
 dp{args.dropout}_train-{args.train_what}{2}'.format(
             'r%s' % args.net[6::], \
             args.old_lr if args.old_lr is not None else args.lr, \
             '_pt=' + 'pretrained_net' if args.pretrain != "random" else 'untrained_net', \
-            args=args)
+            args=args, time=datetime.now().strftime("%Y%m%d%H%M%S"))
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
     if not os.path.exists(img_path): os.makedirs(img_path)
