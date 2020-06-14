@@ -37,10 +37,6 @@ class SkeleContrast(nn.Module):
 
         self.crossm_vector_length = representation_size
 
-        self.final_bn = nn.BatchNorm1d(4096)
-        self.final_bn.weight.data.fill_(1)
-        self.final_bn.bias.data.zero_()
-
         self.dpc_feature_conversion = nn.Sequential(
             nn.ReLU(),
             nn.Linear(4096, self.crossm_vector_length),
