@@ -81,7 +81,7 @@ class LC(nn.Module):
 
 class Resnet18Classifier(nn.Module):
     def __init__(self, sample_size, num_seq, seq_len, network='resnet18', dropout=0.5, num_class=101,
-                 crossm_vector_length=1024):
+                 crossm_vector_length=512):
         super(Resnet18Classifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
@@ -101,17 +101,21 @@ class Resnet18Classifier(nn.Module):
         self.backbone, self.param = select_resnet(network, track_running_stats=track_running_stats)
 
         self.dpc_feature_conversion = nn.Sequential(
-            nn.Flatten(start_dim=1, end_dim=-1),
+            nn.ReLU(),
             nn.Linear(4096, self.crossm_vector_length),
         )
 
-        self.final_bn = nn.BatchNorm1d(self.crossm_vector_length)
-        self.final_bn.weight.data.fill_(1)
-        self.final_bn.bias.data.zero_()
+        self.final_bn_ev = nn.BatchNorm1d(self.crossm_vector_length)
+        self.final_bn_ev.weight.data.fill_(1)
+        self.final_bn_ev.bias.data.zero_()
 
         self.final_fc = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(self.crossm_vector_length, self.num_class))
+            nn.ReLU(),
+            nn.Linear(self.crossm_vector_length, self.crossm_vector_length),
+            nn.ReLU(),
+            nn.Linear(self.crossm_vector_length, self.num_class)
+        )
 
         self._initialize_weights(self.dpc_feature_conversion)
         self._initialize_weights(self.final_fc)
@@ -128,11 +132,12 @@ class Resnet18Classifier(nn.Module):
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-        # feature = feature.view(B*N, self.param['feature_size'], self.last_size, self.last_size)
+        feature = feature.view(B * N, self.param['feature_size'], self.last_size, self.last_size)
+        feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
         feature = self.dpc_feature_conversion(feature)
 
-        feature = self.final_bn(feature) # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
+        feature = self.final_bn_ev(feature) # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
         output = self.final_fc(feature).view(B, N, self.num_class)
 
         return output
@@ -146,4 +151,4 @@ class Resnet18Classifier(nn.Module):
                 # other resnet weights have been initialized in resnet_3d.py
 
     def load_weights_state_dict(self, state_dict, model=None):
-        neq_load_customized((self if model is None else model), state_dict)
+        neq_load_customized((self if model is None else model), state_dict, ignore_layer=".*module.final_bn.*")
