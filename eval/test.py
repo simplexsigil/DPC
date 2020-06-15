@@ -57,6 +57,11 @@ global stop_time
 def main():
     global args;
     args = parser.parse_args()
+
+    print("Startup parameters:")
+    print(args)
+    print()
+
     os.environ[
         "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
