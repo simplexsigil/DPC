@@ -26,11 +26,11 @@ from torchvision import transforms
 import torchvision.utils as vutils
 
 # This way, cuda optimizes for the hardware available, if input size is always equal.
-# torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', default=[0], type=int, nargs='+')
-parser.add_argument('--epochs', default=1, type=int, help='number of total epochs to run')
+parser.add_argument('--gpu', default=[4, 5], type=int, nargs='+')
+parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
 parser.add_argument('--rgb_net', default='resnet18', type=str)
@@ -38,7 +38,7 @@ parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--batch_size', default=20, type=int)
+parser.add_argument('--batch_size', default=40, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -48,7 +48,7 @@ parser.add_argument('--print_freq', default=5, type=int, help='frequency of prin
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--loader_workers', default=16, type=int,
+parser.add_argument('--loader_workers', default=32, type=int,
                     help='number of data loader workers to pre load batch data.')
 parser.add_argument('--train_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),
