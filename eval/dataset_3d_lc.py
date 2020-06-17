@@ -123,7 +123,7 @@ class UCF101_3d(data.Dataset):
             else:
                 # half overlap:
                 clips = [torch.stack(clips[i:i + self.num_seq], 0).transpose(1, 2) for i in
-                         range(0, len(clips) + 1 - self.num_seq, self.num_seq // 2)]
+                         range(0, len(clips) + 1 - self.num_seq, self.num_seq // 2 if self.num_seq >= 2 else 1)]
                 t_seq = torch.stack(clips, 0)
         else:
             t_seq = t_seq.view(self.num_seq, self.seq_len, C, H, W).transpose(1, 2)
