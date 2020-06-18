@@ -29,7 +29,7 @@ import torchvision.utils as vutils
 torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', default=[4, 5], type=int, nargs='+')
+parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
@@ -38,7 +38,8 @@ parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--batch_size', default=40, type=int)
+parser.add_argument('--distance_function', default='cosine', type=str)
+parser.add_argument('--batch_size', default=10, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -95,7 +96,8 @@ def main():
         model = SkeleContrast(img_dim=args.img_dim,
                               seq_len=args.seq_len,
                               network=args.rgb_net,
-                              representation_size=args.representation_size)
+                              representation_size=args.representation_size,
+                              distance_function=args.distance_function)
     else:
         raise ValueError('wrong model!')
 

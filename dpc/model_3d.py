@@ -21,10 +21,11 @@ class SkeleContrast(nn.Module):
     '''Module which performs contrastive learning by matching extracted feature
     vectors from the skele-motion skeleton representation and features extracted from RGB videos with a Resnet 18.'''
 
-    def __init__(self, img_dim, seq_len=30, network='resnet18', representation_size=1024):
+    def __init__(self, img_dim, seq_len=30, network='resnet18', representation_size=1024, distance_function="dot"):
         super(SkeleContrast, self).__init__()
         torch.cuda.manual_seed(233)
         print('Using SkeleContrast model.')
+        self.distance_function=distance_function
         self.sample_size = img_dim
         self.seq_len = seq_len
         self.last_duration = int(math.ceil(seq_len / 4))  # This is the sequence length after using the backbone
@@ -109,7 +110,7 @@ class SkeleContrast(nn.Module):
 
         # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         #score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn="dot")
+        score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
 
 
         return score
