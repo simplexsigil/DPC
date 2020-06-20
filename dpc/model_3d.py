@@ -70,27 +70,26 @@ class SkeleContrast(nn.Module):
         self._initialize_weights(self.skele_motion_backbone)
 
     def _forward_sk(self, block_sk):
-        (B, N, C, T, J) = block_sk.shape
+        (Ba, Bo, C, T, J) = block_sk.shape
 
-        block_sk = block_sk.view(B * N, C, T, J)  # Forward each block individually like a batch input.
+        block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
 
         features = self.skele_motion_backbone(block_sk)
 
         return features
 
     def _forward_rgb(self, block_rgb):
-        # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
+        # block: [B, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
         ### extract feature ###
-        (B, N, C, SL, H, W) = block_rgb.shape
-        block_rgb = block_rgb.view(B * N, C, SL, H, W)
+        (B, C, SL, H, W) = block_rgb.shape
 
         # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
-        feature = self.backbone(block_rgb)  # (B * N, 256, 2, 4, 4)
+        feature = self.backbone(block_rgb)  # (B, 256, 2, 4, 4)
         del block_rgb
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-        feature = feature.view(B*N, self.param['feature_size'], self.last_size, self.last_size)
+        feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
 
         feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
@@ -99,8 +98,6 @@ class SkeleContrast(nn.Module):
         return feature
 
     def forward(self, block_rgb, block_sk):
-        B = block_rgb.shape[0]
-
         pred_sk = self._forward_sk(block_sk)  # (B, N, D)
         pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
 
@@ -111,7 +108,6 @@ class SkeleContrast(nn.Module):
         # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         #score = self.pairwise_euc_dist(pred_sk, pred_rgb)
         score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
-
 
         return score
 

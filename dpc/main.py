@@ -39,7 +39,7 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--distance_function', default='cosine', type=str)
-parser.add_argument('--batch_size', default=10, type=int)
+parser.add_argument('--batch_size', default=15, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -47,6 +47,7 @@ parser.add_argument('--pretrain', default='', type=str, help='path of pretrained
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
+parser.add_argument('--use_dali', action='store_true', default=False, type=bool, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--loader_workers', default=32, type=int,
@@ -212,7 +213,7 @@ def main():
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc, train_accuracy_list = train(train_loader, model, optimizer, epoch)
+        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch)
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
         # save curve
@@ -241,7 +242,7 @@ def main():
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train(data_loader, model, optimizer, epoch):
+def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
     data_loading_times = []
     cuda_transfer_times = []
     calculation_times = []
@@ -381,13 +382,21 @@ def get_data(transform, mode='train'):
                             num_seq=args.num_seq,
                             downsample=args.ds)
     elif args.dataset == 'nturgbd':
-        dataset = NTURGBD_3D(mode=mode,
-                             transform=transform,
-                             seq_len=args.seq_len,
-                             downsample=args.ds,
-                             nturgbd_video_info=args.nturgbd_video_info,
-                             skele_motion_root=args.nturgbd_skele_motion,
-                             split_mode=args.split_mode)
+        if not args.use_dali:
+            dataset = NTURGBD_3D(split=mode,
+                                 transform=transform,
+                                 seq_len=args.seq_len,
+                                 downsample=args.ds,
+                                 nturgbd_video_info=args.nturgbd_video_info,
+                                 skele_motion_root=args.nturgbd_skele_motion,
+                                 split_mode=args.split_mode)
+        else:
+            NTURGB3DInputIterator(nturgbd_video_info=args.nturgbd_video_info,
+                                  skele_motion_root=args.nturgbd_skele_motion,
+                                  seq_len=args.seq_len,
+                                  downsample=args.ds,
+                                  split_mode=args.split_mode
+                                  )
     else:
         raise ValueError('dataset not supported')
 
