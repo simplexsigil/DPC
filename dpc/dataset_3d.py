@@ -366,7 +366,8 @@ class NTURGB3DInputIterator(object):
                  downsample=1,
                  return_label=False,
                  split_mode="perc",
-                 split_frac=0.1):
+                 split_frac=0.1,
+                 unit_test=False):
         print('Using the NVIDIA DALI pipeline for data loading and preparation via GPU.')
 
         self.batch_size = batch_size
@@ -382,7 +383,10 @@ class NTURGB3DInputIterator(object):
 
         self.video_info_skeletons = {}
 
-        self.sample_info = ndu.read_video_info(nturgbd_video_info)
+        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=11 if unit_test else None)
+
+        if unit_test:
+            self.sample_info = self.sample_info.iloc[:11]
 
         v_file_count = len(self.sample_info)
 
@@ -427,28 +431,77 @@ class NTURGB3DInputIterator(object):
             raise StopIteration
 
         img_seqs, sk_seqs = [], []
+        seq_rotations, seq_hues, seq_saturations, seq_values = [], [], [], []
 
         for _ in range(self.batch_size):
             index = self.indices[self.i % self.n]
 
-            img_seq, sk_seq = self[index]
+            img_seq, random_transforms, sk_seq = self[index]
             img_seqs.append(img_seq)
             sk_seqs.append(sk_seq)
 
+            seq_rotations.append(random_transforms[0])
+            seq_hues.append(random_transforms[1])
+            seq_saturations.append(random_transforms[2])
+            seq_values.append(random_transforms[3])
+
             self.i = self.i + 1  # Preparing next iteration.
+
+        # sk_seqs = sk_seqs[0]
+        img_seqs = np.stack(img_seqs, 0)
+        seq_rotations = np.stack(seq_rotations, 0)
+        seq_hues = np.stack(seq_hues, 0)
+        seq_saturations = np.stack(seq_saturations, 0)
+        seq_values = np.stack(seq_values, 0)
+
+        (B, F, H, W, C) = img_seqs.shape
+        img_seqs = img_seqs.reshape(self.batch_size * F, H, W, C)
+
+        # (sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
+        # (sk_Ba, sk_Bo, sk_C, sk_T, sk_J) = sk_seqs.shape
+
+        sk_seqs = np.repeat(sk_seqs, repeats=5, axis=0)
 
         return img_seqs, sk_seqs
 
+    def _load_img_buffer(self, sample, i):
+        with open(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1)), 'rb') as f:
+            return np.frombuffer(f.read(), dtype=np.uint8)
+
+    def random_image_transforms(self, frame_count,
+                                rotation_range=(-30., 30.),
+                                hue_range=(-50, 50),
+                                saturation_range=(0., 2.),
+                                value_range=(0, 2.),
+                                hue_change_prop=0.5):
+
+        # The same rotation for all frames.
+        rotations = np.repeat(np.random.uniform(low=rotation_range[0], high=rotation_range[1]), repeats=frame_count)
+
+        if np.random.random() > hue_change_prop:
+            # Different hue for each frame.
+            hues = np.random.uniform(low=hue_range[0], high=hue_range[1], size=frame_count)
+        else:
+            hues = np.repeat(0., repeats=frame_count)
+
+        saturations = np.random.uniform(low=saturation_range[0], high=saturation_range[1], size=frame_count)
+
+        values = np.random.uniform(low=value_range[0], high=value_range[1], size=frame_count)
+
+        return rotations, hues, saturations, values
+
     def __getitem__(self, index):
-        sample = self.sample_info.iloc[index]
+        sample = self.sample_info.loc[index]
 
         frame_indices = DatasetUtils.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"])
 
         img_seq = []
 
         for i in frame_indices:
-            with open(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1)), 'rb') as f:
-                img_seq.append(np.frombuffer(f.read(), dtype=np.uint8))
+            # img_seq.append(self._load_img_buffer(sample, i))  # I did not find a way to make DALI work with this so far.
+            img_seq.append(pil_loader(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1))))
+
+        img_seq = np.stack(img_seq, axis=0)
 
         if self.use_skeleton:
             sk_seq = NTURGBDDatasetUtils.load_skeleton_seqs(self.sk_info, sample["id"], frame_indices)
@@ -457,22 +510,21 @@ class NTURGB3DInputIterator(object):
             # (sk_Bo, sk_J, sk_T, sk_C) = sk_seq.shape
 
             # This is transposed, so we can split the image into blocks during training.
-            sk_seq = np.transpose(sk_seq, axes=(1, 2))
-            sk_seq = np.transpose(sk_seq, axes=(2, 3))
-            sk_seq = np.transpose(sk_seq, axes=(1, 2))  # (sk_Bo, C, T, J)
+            sk_seq = np.transpose(sk_seq, axes=(0, 3, 2, 1))
+            # (sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
 
             if self.return_label:
                 label = sample["action"]
-                return img_seq, sk_seq, label
+                return img_seq, self.random_image_transforms(len(frame_indices)), sk_seq, label
 
             else:
-                return img_seq, sk_seq
+                return img_seq, self.random_image_transforms(len(frame_indices)), sk_seq
 
         if self.return_label:
             label = sample["action"]
-            return img_seq, label
+            return img_seq, self.random_image_transforms(len(frame_indices)), label
         else:
-            return img_seq
+            return img_seq, self.random_image_transforms(len(frame_indices))
 
 
 class NTURGBD3DPipeline(Pipeline):
@@ -480,52 +532,63 @@ class NTURGBD3DPipeline(Pipeline):
     This one performs data augmentation on GPU.
     """
 
-    def __init__(self, batch_size, num_threads, device_id, nturgbd_input_data):
-        super(NTURGBD3DPipeline, self).__init__(batch_size,
+    def __init__(self, batch_size, sequence_length, num_threads, device_id, nturgbd_input_data):
+        super(NTURGBD3DPipeline, self).__init__(batch_size * sequence_length,
                                                 num_threads,
                                                 device_id,
                                                 seed=12 + device_id)
         self.external_data = nturgbd_input_data
         self.iterator = iter(self.external_data)
 
-        self.input_img_seq = ops.ExternalSource()
-        self.input_sk_seq = ops.ExternalSource()
+        self.input_imgs = ops.ExternalSource(device="gpu")
+        self.input_sk_seq = ops.ExternalSource(device="gpu")
 
-        self.decode = ops.ImageDecoder(device="mixed", output_type=types.RGB)
-        # self.enhance = ops.BrightnessContrast(device="gpu", contrast=2)
+        self.rrc = ops.RandomResizedCrop(size=(128, 128), device="gpu",
+                                         random_area=[0.05, 1.0], interp_type=types.INTERP_TRIANGULAR)
 
-        self.rrc = ops.RandomResizedCrop(size=(128, 128), device="gpu", output_type=types.RGB,
-                                         random_area=[0.7, 1.0], interp_type=types.INTERP_TRIANGULAR)
+        # TODO: While this works, I am still not able to inject the parameters for the operations to the pipeline.
+        # Random variables
+        self.rng_sat = ops.Uniform(range=[0.0, 1.5])
+        self.rng_val = ops.Uniform(range=[0.5, 1.5])
+        self.rng_hue = ops.Uniform(range=[3., 3.])
 
-        self.flip = ops.Flip()
+        self.rng_angle = ops.Uniform(range=[-20., 20.])
 
-        self.coin = ops.CoinFlip(probability=0.5)
+        self.rrot = ops.Rotate(device="gpu") # angle=10,
 
+        self.rhsv = ops.Hsv(device="gpu")
 
-        # RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-        # RandomHorizontalFlip(consistent=True),
-        # RandomGray(consistent=False, p=0.5),
-        # ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-        # ToTensor(),
-        # Normalize()
+        self.normalize = ops.CropMirrorNormalize(
+            device="gpu",
+            mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+            std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
+            mirror=0,
+        output_layout=types.NHWC)
 
     def define_graph(self):
-        rng = self.coin()
+        saturation = self.rng_sat()
+        value = self.rng_val()
+        hue = self.rng_hue()
+        angle = self.rng_angle()
 
-        self.img_seq, self.sk_seq = self.input_img_seq, self.input_sk_seq
-        images = self.decode(self.img_seq)
+        self.sk_seq = self.input_sk_seq()
 
-        images = self.rrc(images)
-        images = self.flip(images, horizontal=rng)
-        output = self.enhance(images)
-        return (output, labels)
+        self.img_seq = self.input_imgs()
+        image = self.rrot(self.img_seq, angle=angle)
+        image = self.rrc(image)
+
+        image = self.rhsv(image, hue=hue, saturation=saturation, value=value)
+
+        image = self.normalize(image)
+
+        return image, self.sk_seq.gpu()
 
     def iter_setup(self):
         try:
-            img_seq, sk_seq = next(self.iterator)
+            img_seqs, sk_seqs = next(self.iterator)
 
-            self.feed_input(self.input_img_seq, img_seq)
-            self.feed_input(self.input_sk_seq, sk_seq)
+            self.feed_input(self.img_seq, img_seqs, layout="HWC")
+            self.feed_input(self.sk_seq, sk_seqs, layout="FCHW")  # F is actually the body dimension.
         except StopIteration:
             self.iterator = iter(self.external_data)
             raise StopIteration
@@ -716,9 +779,12 @@ class NTURGBDDatasetUtils(DatasetUtils):
     action_dict_decode = {act_id: label for act_id, label in enumerate(nturgbd_action_labels)}
 
     @staticmethod
-    def read_video_info(video_info_csv, extract_infos=True) -> pd.DataFrame:
+    def read_video_info(video_info_csv, extract_infos=True, max_samples=None) -> pd.DataFrame:
         NDU = NTURGBDDatasetUtils
         sample_infos = pd.read_csv(video_info_csv, header=0, names=["path", "frame_count"])
+
+        if max_samples is not None:
+            sample_infos = sample_infos.iloc[:max_samples]
 
         if extract_infos:
             sample_infos = NDU.extract_infos(sample_infos)
@@ -940,3 +1006,47 @@ class NTURGBDDatasetUtils(DatasetUtils):
         assert T == len(frame_indices)
 
         return sk_seq
+
+
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+
+def show_images(image_batch, batch_size, seq_len):
+    columns = seq_len
+    rows = batch_size
+    fig = plt.figure(figsize=(8, 8))
+    gs = gridspec.GridSpec(rows, columns)
+
+    image_batch = image_batch.as_cpu().as_array()
+
+    for j in range(rows * columns):
+        plt.subplot(gs[j])
+        plt.axis("off")
+        img = image_batch[j]
+        plt.imshow(img)
+
+    plt.show()
+
+
+def test():
+    batch_size = 10
+    seq_len = 5
+    video_info_csv = os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/video_info.csv")
+    skele_motion_root = os.path.expanduser("~/datasets/nturgbd/skele-motion")
+
+    nii = NTURGB3DInputIterator(nturgbd_video_info=video_info_csv, skele_motion_root=skele_motion_root,
+                                batch_size=batch_size, seq_len=seq_len, unit_test=True)
+
+    pipeline = NTURGBD3DPipeline(batch_size=batch_size, sequence_length=seq_len, num_threads=1, device_id=0,
+                                 nturgbd_input_data=nii)
+
+    pipeline.build()
+
+    images, sk_seqs = pipeline.run()
+    show_images(images, batch_size, seq_len)
+    pass
+
+
+if __name__ == "__main__":
+    test()

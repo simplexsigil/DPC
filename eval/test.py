@@ -286,7 +286,7 @@ def train(data_loader, model, optimizer, epoch):
     calculation_times = []
     losses = AverageMeter()
     accuracy = AverageMeter()
-    model.train()
+    model.train_two_stream_contrastive()
     global iteration
     global start_time
     global stop_time
