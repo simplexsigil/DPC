@@ -47,7 +47,7 @@ parser.add_argument('--pretrain', default='', type=str, help='path of pretrained
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
-parser.add_argument('--use_dali', action='store_true', default=False, type=bool, help='Reset learning rate when resume training?')
+parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
 parser.add_argument('--loader_workers', default=32, type=int,
@@ -180,7 +180,6 @@ def main():
     elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
         transform = transforms.Compose([
             RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-            RandomHorizontalFlip(consistent=True),
             RandomGray(consistent=False, p=0.5),
             ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
             ToTensor(),

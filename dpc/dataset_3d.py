@@ -296,10 +296,10 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         print("Dropped {} of {} samples due to missing skeleton information.".format(
             sample_count - len(self.sample_info), sample_count))
 
-        print("Remaining videos in mode {}: {}".format(self.mode, len(self.sample_info)))
+        print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
-        if self.mode == "val":
+        if self.split == "val":
             if len(self.sample_info) > 500:
                 print(
                     "Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " +
