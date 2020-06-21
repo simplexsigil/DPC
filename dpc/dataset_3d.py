@@ -541,6 +541,7 @@ class NTURGBD3DPipeline(Pipeline):
         self.iterator = iter(self.external_data)
 
         self.input_imgs = ops.ExternalSource(device="gpu")
+        self.input_angle = ops.ExternalSource(device="cpu")  # Somehow the parameter for the operations has to be on CPU.
         self.input_sk_seq = ops.ExternalSource(device="gpu")
 
         self.rrc = ops.RandomResizedCrop(size=(128, 128), device="gpu",
@@ -553,6 +554,8 @@ class NTURGBD3DPipeline(Pipeline):
         self.rng_hue = ops.Uniform(range=[3., 3.])
 
         self.rng_angle = ops.Uniform(range=[-20., 20.])
+
+
 
         self.rrot = ops.Rotate(device="gpu") # angle=10,
 
@@ -571,10 +574,12 @@ class NTURGBD3DPipeline(Pipeline):
         hue = self.rng_hue()
         angle = self.rng_angle()
 
+        self.in_angle = self.input_angle()
+
         self.sk_seq = self.input_sk_seq()
 
         self.img_seq = self.input_imgs()
-        image = self.rrot(self.img_seq, angle=angle)
+        image = self.rrot(self.img_seq, angle=self.in_angle)
         image = self.rrc(image)
 
         image = self.rhsv(image, hue=hue, saturation=saturation, value=value)
@@ -589,6 +594,12 @@ class NTURGBD3DPipeline(Pipeline):
 
             self.feed_input(self.img_seq, img_seqs, layout="HWC")
             self.feed_input(self.sk_seq, sk_seqs, layout="FCHW")  # F is actually the body dimension.
+
+            angles = np.repeat(45., 50)
+            angles = angles.astype(np.float32)
+
+            self.feed_input(self.in_angle, angles)
+
         except StopIteration:
             self.iterator = iter(self.external_data)
             raise StopIteration
