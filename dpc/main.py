@@ -39,7 +39,7 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--distance_function', default='cosine', type=str)
-parser.add_argument('--batch_size', default=15, type=int)
+parser.add_argument('--batch_size', default=10, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -167,7 +167,7 @@ def main():
             ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
             ToTensor(),
             Normalize()
-        ])
+            ])
     elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
         transform = transforms.Compose([
             RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
@@ -176,7 +176,7 @@ def main():
             ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
             ToTensor(),
             Normalize()
-        ])
+            ])
     elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
         transform = transforms.Compose([
             RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
@@ -184,10 +184,10 @@ def main():
             ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
             ToTensor(),
             Normalize()
-        ])
+            ])
 
-    train_loader = get_data(transform, 'train')
-    val_loader = get_data(transform, 'val')
+    train_loader, train_len = get_data(transform, 'train')
+    val_loader, val_len = get_data(transform, 'val')
 
     # setup tools
     global de_normalize
@@ -212,8 +212,8 @@ def main():
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch)
-        val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
+        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch, train_len)
+        val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch, val_len)
 
         # save curve
         writer_train.add_scalar('global/loss', train_loss, epoch)
@@ -230,18 +230,18 @@ def main():
         # save check_point
         is_best = val_acc > best_acc
         best_acc = max(val_acc, best_acc)
-        save_checkpoint({'epoch': epoch + 1,
-                         'net': args.rgb_net,
+        save_checkpoint({'epoch':      epoch + 1,
+                         'net':        args.rgb_net,
                          'state_dict': model.state_dict(),
-                         'best_acc': best_acc,
-                         'optimizer': optimizer.state_dict(),
-                         'iteration': iteration},
+                         'best_acc':   best_acc,
+                         'optimizer':  optimizer.state_dict(),
+                         'iteration':  iteration},
                         is_best, filename=os.path.join(model_path, 'epoch%s.pth.tar' % str(epoch + 1)), keep_all=False)
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
+def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len):
     data_loading_times = []
     cuda_transfer_times = []
     calculation_times = []
@@ -254,7 +254,25 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
     global stop_time
 
     start_time = time.perf_counter()
-    for idx, (input_seq, sk_seq) in enumerate(data_loader):
+    tic = time.time()
+
+    for idx, out in enumerate(data_loader):
+        if not args.use_dali:
+            (input_seq, sk_seq) = out
+        else:
+            input_seq, sk_seq = out[0]["img_seq"], out[0]["sk_seq"]
+            (BF, C, H, W) = input_seq.shape
+            input_seq = input_seq.view(args.batch_size, args.seq_len, C, H, W)
+
+            input_seq = input_seq.transpose(1, 2).float()
+            # [B, C, SL, H, W]
+
+            (BF, sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
+            sk_seq = sk_seq.view(args.batch_size, args.seq_len, sk_Bo, sk_C, sk_T, sk_J)
+            sk_seq = sk_seq[:, 0, :]
+            sk_seq = sk_seq.view(args.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
+            # (Ba, Bo, C, T, J)
+
         stop_time = time.perf_counter()  # Timing data loading
         data_loading_times.append(stop_time - start_time)
 
@@ -269,7 +287,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
 
         start_time = time.perf_counter()  # Timing calculation
 
-        tic = time.time()
+
 
         B = input_seq.size(0)
 
@@ -312,7 +330,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Loss {loss.val:.6f} ({loss.local_avg:.4f})\t'
                   'Acc: top1 {3:.4f}; top3 {4:.4f}; top5 {5:.4f} T:{6:.2f}\t'.format(
-                epoch, idx, len(data_loader), top1, top3, top5, time.time() - tic, loss=losses))
+                epoch, idx, epoch_len, top1, top3, top5, time.time() - tic, loss=losses))
 
             writer_train.add_scalar('local/loss', losses.val, iteration)
             writer_train.add_scalar('local/accuracy', accuracy.val, iteration)
@@ -320,22 +338,23 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
             iteration += 1
 
         start_time = time.perf_counter()
+        tic = time.time()
 
     print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
         sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
         sum(calculation_times) / len(calculation_times)
-    ))
+        ))
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
-def validate(data_loader, model, epoch):
+def validate(data_loader, model, epoch, val_len):
     losses = AverageMeter()
     accuracy = AverageMeter()
     accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     model.eval()
 
     with torch.no_grad():
-        for idx, (input_seq, sk_seq) in tqdm(enumerate(data_loader), total=len(data_loader)):
+        for idx, (input_seq, sk_seq) in tqdm(enumerate(data_loader), total=val_len):
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
 
@@ -366,22 +385,23 @@ def validate(data_loader, model, epoch):
 
 def get_data(transform, mode='train'):
     print('Loading data for "%s" ...' % mode)
-    if args.dataset == 'k400':
-        use_big_K400 = args.img_dim > 140
-        dataset = Kinetics400_full_3d(mode=mode,
-                                      transform=transform,
-                                      seq_len=args.seq_len,
-                                      num_seq=args.num_seq,
-                                      downsample=5,
-                                      big=use_big_K400)
-    elif args.dataset == 'ucf101':
-        dataset = UCF101_3d(mode=mode,
-                            transform=transform,
-                            seq_len=args.seq_len,
-                            num_seq=args.num_seq,
-                            downsample=args.ds)
-    elif args.dataset == 'nturgbd':
-        if not args.use_dali:
+    data_loader = None
+    if not args.use_dali:
+        if args.dataset == 'k400':
+            use_big_K400 = args.img_dim > 140
+            dataset = Kinetics400_full_3d(mode=mode,
+                                          transform=transform,
+                                          seq_len=args.seq_len,
+                                          num_seq=args.num_seq,
+                                          downsample=5,
+                                          big=use_big_K400)
+        elif args.dataset == 'ucf101':
+            dataset = UCF101_3d(mode=mode,
+                                transform=transform,
+                                seq_len=args.seq_len,
+                                num_seq=args.num_seq,
+                                downsample=args.ds)
+        elif args.dataset == 'nturgbd':
             dataset = NTURGBD_3D(split=mode,
                                  transform=transform,
                                  seq_len=args.seq_len,
@@ -390,35 +410,40 @@ def get_data(transform, mode='train'):
                                  skele_motion_root=args.nturgbd_skele_motion,
                                  split_mode=args.split_mode)
         else:
-            NTURGB3DInputIterator(nturgbd_video_info=args.nturgbd_video_info,
-                                  skele_motion_root=args.nturgbd_skele_motion,
-                                  seq_len=args.seq_len,
-                                  downsample=args.ds,
-                                  split_mode=args.split_mode
-                                  )
+            raise ValueError('dataset not supported')
+
+        sampler = data.RandomSampler(dataset)
+
+        data_loader = data.DataLoader(dataset,
+                                      batch_size=args.batch_size,
+                                      sampler=sampler,
+                                      shuffle=False,
+                                      num_workers=args.loader_workers,
+                                      pin_memory=True,
+                                      drop_last=True)
+
+        print('"%s" dataset size: %d' % (mode, len(dataset)))
+        return data_loader, len(data_loader)
+
     else:
-        raise ValueError('dataset not supported')
+        nii = NTURGB3DInputIterator(
+            split=mode,
+            nturgbd_video_info=args.nturgbd_video_info,
+            skele_motion_root=args.nturgbd_skele_motion,
+            seq_len=args.seq_len,
+            downsample=args.ds,
+            split_mode=args.split_mode,
+            batch_size=args.batch_size
+            )
 
-    sampler = data.RandomSampler(dataset)
+        pipe = NTURGBD3DPipeline(batch_size=args.batch_size, seq_length=args.seq_len, num_threads=16, device_id=0,
+                                 nturgbd_input_data=nii)
 
-    if mode == 'train':
-        data_loader = data.DataLoader(dataset,
-                                      batch_size=args.batch_size,
-                                      sampler=sampler,
-                                      shuffle=False,
-                                      num_workers=args.loader_workers,
-                                      pin_memory=True,
-                                      drop_last=True)
-    elif mode == 'val':
-        data_loader = data.DataLoader(dataset,
-                                      batch_size=args.batch_size,
-                                      sampler=sampler,
-                                      shuffle=False,
-                                      num_workers=args.loader_workers,
-                                      pin_memory=True,
-                                      drop_last=True)
-    print('"%s" dataset size: %d' % (mode, len(dataset)))
-    return data_loader
+        import nvidia.dali.plugin.pytorch as dali
+        data_loader = dali.DALIGenericIterator([pipe], output_map=["img_seq", "sk_seq"], size=-1)
+
+        print('Using DALI. {} dataset size: {}'.format(mode, len(nii)))
+        return data_loader, len(nii)
 
 
 def set_path(args):

@@ -378,6 +378,9 @@ class NTURGB3DInputIterator(object):
         self.split_mode = split_mode
         self.use_skeleton = skele_motion_root is not None
 
+        self.image_min_height = 150
+        self.image_min_width = 266
+
         print('Using nturgbd data (150x150)')
         ndu = NTURGBDDatasetUtils
 
@@ -432,9 +435,10 @@ class NTURGB3DInputIterator(object):
 
         img_seqs, sk_seqs = [], []
         seq_rotations, seq_hues, seq_saturations, seq_values = [], [], [], []
+        seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys = [], [], [], []
 
         for _ in range(self.batch_size):
-            index = self.indices[self.i % self.n]
+            index = self.indices[self.i % self.n]  # Fill missing batch samples by wrapping around.
 
             img_seq, random_transforms, sk_seq = self[index]
             img_seqs.append(img_seq)
@@ -445,50 +449,126 @@ class NTURGB3DInputIterator(object):
             seq_saturations.append(random_transforms[2])
             seq_values.append(random_transforms[3])
 
+            seq_crop_ws.append(random_transforms[4])
+            seq_crop_hs.append(random_transforms[5])
+            seq_crop_xs.append(random_transforms[6])
+            seq_crop_ys.append(random_transforms[7])
+
             self.i = self.i + 1  # Preparing next iteration.
 
         # sk_seqs = sk_seqs[0]
-        img_seqs = np.stack(img_seqs, 0)
+        # img_seqs = np.stack(img_seqs, 0)
+        img_seqs_flat = [img for subl in img_seqs for img in subl]
         seq_rotations = np.stack(seq_rotations, 0)
         seq_hues = np.stack(seq_hues, 0)
         seq_saturations = np.stack(seq_saturations, 0)
         seq_values = np.stack(seq_values, 0)
 
-        (B, F, H, W, C) = img_seqs.shape
-        img_seqs = img_seqs.reshape(self.batch_size * F, H, W, C)
+        seq_crop_ws = np.stack(seq_crop_ws, 0)
+        seq_crop_hs = np.stack(seq_crop_hs, 0)
+        seq_crop_xs = np.stack(seq_crop_xs, 0)
+        seq_crop_ys = np.stack(seq_crop_ys, 0)
 
-        # (sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
-        # (sk_Ba, sk_Bo, sk_C, sk_T, sk_J) = sk_seqs.shape
+        # B, F = img_seqs.shape[0], img_seqs.shape[1]
+        # img_seqs = img_seqs.reshape(self.batch_size * F, -1)  # , H, W, C)
+        F = self.seq_len
+        seq_rotations = seq_rotations.reshape(self.batch_size * F, 1)
+        seq_hues = seq_hues.reshape(self.batch_size * F, 1)
+        seq_saturations = seq_saturations.reshape(self.batch_size * F, 1)
+        seq_values = seq_values.reshape(self.batch_size * F, 1)
 
-        sk_seqs = np.repeat(sk_seqs, repeats=5, axis=0)
+        seq_crop_ws = seq_crop_ws.reshape(self.batch_size * F, 1)
+        seq_crop_hs = seq_crop_hs.reshape(self.batch_size * F, 1)
+        seq_crop_xs = seq_crop_xs.reshape(self.batch_size * F, 1)
+        seq_crop_ys = seq_crop_ys.reshape(self.batch_size * F, 1)
 
-        return img_seqs, sk_seqs
+        sk_seqs = np.repeat(sk_seqs, repeats=F, axis=0)
+
+        return img_seqs_flat, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seqs
+
+    def __len__(self):
+        return self.n
 
     def _load_img_buffer(self, sample, i):
         with open(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1)), 'rb') as f:
             return np.frombuffer(f.read(), dtype=np.uint8)
 
+    def random_image_crop_square(self, min_area_n=0.4, max_area_n=1, image_min_width=None, image_min_height=None):
+        """
+        This follows the conventions of https://docs.nvidia.com/deeplearning/dali/user-guide/docs/supported_ops.html#nvidia.dali.ops.Crop
+        Especially considering the meaning of crop_pos_x_norm and crop_pos_y_norm.
+        """
+        if image_min_width is None:
+            image_min_width = self.image_min_width
+        if image_min_height is None:
+            image_min_height = self.image_min_height
+
+        image_shorter = min(image_min_height, image_min_width)
+        image_longer = max(image_min_height, image_min_width)
+
+        # First find square crop length.
+        total_area = image_min_width * image_min_height
+
+        min_crop_length = math.ceil(math.sqrt(min_area_n * total_area))
+        max_crop_length = math.floor(math.sqrt(max_area_n * total_area))
+
+        min_crop_length = max(min_crop_length, 1.)
+        max_crop_length = min(max_crop_length, image_shorter)
+
+        crop_length = np.random.uniform(min_crop_length, max_crop_length)
+
+        # Second, find upper left corner position. Normal distributed around center.
+        crop_pos_x_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.),
+                              1.)  # Normal distributed between 0 and 1.
+        crop_pos_y_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.),
+                              1.)  # Normal distributed between 0 and 1.
+
+        crop_length_x = crop_length
+        crop_length_y = crop_length
+
+        return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
+
     def random_image_transforms(self, frame_count,
                                 rotation_range=(-30., 30.),
-                                hue_range=(-50, 50),
+                                hue_range=(-10, 10),
                                 saturation_range=(0., 2.),
-                                value_range=(0, 2.),
-                                hue_change_prop=0.5):
-
+                                value_range=(0.5, 2.),
+                                hue_change_prop=0.5,
+                                crop_area_range=(0.05, 1.)):
         # The same rotation for all frames.
         rotations = np.repeat(np.random.uniform(low=rotation_range[0], high=rotation_range[1]), repeats=frame_count)
+        rotations = rotations.astype(np.float32)
 
         if np.random.random() > hue_change_prop:
             # Different hue for each frame.
-            hues = np.random.uniform(low=hue_range[0], high=hue_range[1], size=frame_count)
+            hues = np.repeat(np.random.uniform(low=hue_range[0], high=hue_range[1]), repeats=frame_count)
         else:
             hues = np.repeat(0., repeats=frame_count)
 
-        saturations = np.random.uniform(low=saturation_range[0], high=saturation_range[1], size=frame_count)
+        hues = hues.astype(np.float32)
 
-        values = np.random.uniform(low=value_range[0], high=value_range[1], size=frame_count)
+        saturations = np.repeat(np.random.uniform(low=saturation_range[0], high=saturation_range[1]),
+                                repeats=frame_count)
+        saturations = saturations.astype(np.float32)
 
-        return rotations, hues, saturations, values
+        values = np.repeat(np.random.uniform(low=value_range[0], high=value_range[1]), repeats=frame_count)
+        values = values.astype(np.float32)
+
+        crop_w, crop_h, crop_x, crop_y = self.random_image_crop_square(min_area_n=min(crop_area_range),
+                                                                       max_area_n=max(crop_area_range),
+                                                                       image_min_width=self.image_min_width,
+                                                                       image_min_height=self.image_min_height)
+
+        crop_ws = np.repeat(crop_w, repeats=frame_count)
+        crop_ws = crop_ws.astype(np.float32)
+        crop_hs = np.repeat(crop_h, repeats=frame_count)
+        crop_hs = crop_hs.astype(np.float32)
+        crop_xs = np.repeat(crop_x, repeats=frame_count)
+        crop_xs = crop_xs.astype(np.float32)
+        crop_ys = np.repeat(crop_y, repeats=frame_count)
+        crop_ys = crop_ys.astype(np.float32)
+
+        return rotations, hues, saturations, values, crop_ws, crop_hs, crop_xs, crop_ys
 
     def __getitem__(self, index):
         sample = self.sample_info.loc[index]
@@ -498,10 +578,10 @@ class NTURGB3DInputIterator(object):
         img_seq = []
 
         for i in frame_indices:
-            # img_seq.append(self._load_img_buffer(sample, i))  # I did not find a way to make DALI work with this so far.
-            img_seq.append(pil_loader(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1))))
+            img_seq.append(self._load_img_buffer(sample, i))  # I did not find a way to make DALI work with this so far.
+            # img_seq.append(pil_loader(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1))))
 
-        img_seq = np.stack(img_seq, axis=0)
+        #img_seq = np.stack(img_seq, axis=0)
 
         if self.use_skeleton:
             sk_seq = NTURGBDDatasetUtils.load_skeleton_seqs(self.sk_info, sample["id"], frame_indices)
@@ -532,73 +612,88 @@ class NTURGBD3DPipeline(Pipeline):
     This one performs data augmentation on GPU.
     """
 
-    def __init__(self, batch_size, sequence_length, num_threads, device_id, nturgbd_input_data):
-        super(NTURGBD3DPipeline, self).__init__(batch_size * sequence_length,
-                                                num_threads,
+    def __init__(self, batch_size, seq_length, num_threads, device_id, nturgbd_input_data):
+        super(NTURGBD3DPipeline, self).__init__(batch_size * seq_length,
+                                                32,
                                                 device_id,
-                                                seed=12 + device_id)
+                                                seed=12 + device_id,
+                                                prefetch_queue_depth=4)
         self.external_data = nturgbd_input_data
         self.iterator = iter(self.external_data)
 
-        self.input_imgs = ops.ExternalSource(device="gpu")
-        self.input_angle = ops.ExternalSource(device="cpu")  # Somehow the parameter for the operations has to be on CPU.
-        self.input_sk_seq = ops.ExternalSource(device="gpu")
+        self.input_imgs = ops.ExternalSource(device="cpu")
+        self.input_angles = ops.ExternalSource(
+            device="cpu")  # Somehow the parameter for the operations has to be on CPU.
+        self.input_hues = ops.ExternalSource(device="cpu")
+        self.input_saturations = ops.ExternalSource(device="cpu")
+        self.input_values = ops.ExternalSource(device="cpu")
 
-        self.rrc = ops.RandomResizedCrop(size=(128, 128), device="gpu",
-                                         random_area=[0.05, 1.0], interp_type=types.INTERP_TRIANGULAR)
+        self.input_crop_ws = ops.ExternalSource(device="cpu")
+        self.input_crop_hs = ops.ExternalSource(device="cpu")
+        self.input_crop_xs = ops.ExternalSource(device="cpu")
+        self.input_crop_ys = ops.ExternalSource(device="cpu")
 
-        # TODO: While this works, I am still not able to inject the parameters for the operations to the pipeline.
-        # Random variables
-        self.rng_sat = ops.Uniform(range=[0.0, 1.5])
-        self.rng_val = ops.Uniform(range=[0.5, 1.5])
-        self.rng_hue = ops.Uniform(range=[3., 3.])
+        self.input_sk_seq = ops.ExternalSource(device="cpu")
 
-        self.rng_angle = ops.Uniform(range=[-20., 20.])
+        self.img_dec = ops.ImageDecoder(device="mixed", bytes_per_sample_hint=360000)
 
-
-
-        self.rrot = ops.Rotate(device="gpu") # angle=10,
-
+        self.rrot = ops.Rotate(interp_type=types.INTERP_LINEAR, device="gpu")  # angle=10,
+        self.rcrop = ops.Crop(device="gpu")
+        self.rrsize = ops.Resize(resize_x=128., resize_y=128., interp_type=types.INTERP_TRIANGULAR, device="gpu")
         self.rhsv = ops.Hsv(device="gpu")
-
         self.normalize = ops.CropMirrorNormalize(
             device="gpu",
             mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
             std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
             mirror=0,
-        output_layout=types.NHWC)
+            output_layout=types.NCHW)
 
     def define_graph(self):
-        saturation = self.rng_sat()
-        value = self.rng_val()
-        hue = self.rng_hue()
-        angle = self.rng_angle()
+        self.img_seq = self.input_imgs()
 
-        self.in_angle = self.input_angle()
+        self.in_angle = self.input_angles()
+        self.in_hue = self.input_hues()
+        self.in_saturation = self.input_saturations()
+        self.in_value = self.input_values()
+
+        self.in_crop_w = self.input_crop_ws()
+        self.in_crop_h = self.input_crop_hs()
+        self.in_crop_x = self.input_crop_xs()
+        self.in_crop_y = self.input_crop_ys()
 
         self.sk_seq = self.input_sk_seq()
 
-        self.img_seq = self.input_imgs()
-        image = self.rrot(self.img_seq, angle=self.in_angle)
-        image = self.rrc(image)
+        image = self.img_dec(self.img_seq)
+        image = self.rrot(image, angle=self.in_angle)
+        image = self.rcrop(image,
+                           crop_pos_x=self.in_crop_x, crop_pos_y=self.in_crop_y,
+                           crop_w=self.in_crop_w, crop_h=self.in_crop_h)
 
-        image = self.rhsv(image, hue=hue, saturation=saturation, value=value)
+        image = self.rrsize(image)
+        image = self.rhsv(image, hue=self.in_hue, saturation=self.in_saturation, value=self.in_value)
 
         image = self.normalize(image)
 
-        return image, self.sk_seq.gpu()
+        return image.gpu(), self.sk_seq.gpu()
 
     def iter_setup(self):
         try:
-            img_seqs, sk_seqs = next(self.iterator)
+            img_seqs, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seqs = next(
+                self.iterator)
 
-            self.feed_input(self.img_seq, img_seqs, layout="HWC")
+            # The parameters for the transformations are also provided.
+            self.feed_input(self.img_seq, img_seqs)
+            self.feed_input(self.in_angle, seq_rotations)
+            self.feed_input(self.in_hue, seq_hues)
+            self.feed_input(self.in_saturation, seq_saturations)
+            self.feed_input(self.in_value, seq_values)
+
+            self.feed_input(self.in_crop_w, seq_crop_ws)
+            self.feed_input(self.in_crop_h, seq_crop_hs)
+            self.feed_input(self.in_crop_x, seq_crop_xs)
+            self.feed_input(self.in_crop_y, seq_crop_ys)
+
             self.feed_input(self.sk_seq, sk_seqs, layout="FCHW")  # F is actually the body dimension.
-
-            angles = np.repeat(45., 50)
-            angles = angles.astype(np.float32)
-
-            self.feed_input(self.in_angle, angles)
 
         except StopIteration:
             self.iterator = iter(self.external_data)
@@ -779,7 +874,7 @@ class NTURGBDDatasetUtils(DatasetUtils):
         "exchange things with other person",
         "support somebody with hand",
         "finger-guessing game (playing rock-paper-scissors)"
-    ]
+        ]
 
     nturgbd_cross_subject_training = [1, 2, 4, 5, 8, 9, 13, 14, 15, 16, 17, 18, 19, 25, 27, 28, 31, 34, 35,
                                       38, 45, 46, 47, 49, 50, 52, 53, 54, 55, 56, 57, 58, 59, 70, 74, 78,
@@ -1035,13 +1130,14 @@ def show_images(image_batch, batch_size, seq_len):
         plt.subplot(gs[j])
         plt.axis("off")
         img = image_batch[j]
+        img = np.transpose(img, (1,2,0))
         plt.imshow(img)
 
     plt.show()
 
 
 def test():
-    batch_size = 10
+    batch_size = 5
     seq_len = 5
     video_info_csv = os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/video_info.csv")
     skele_motion_root = os.path.expanduser("~/datasets/nturgbd/skele-motion")
@@ -1049,12 +1145,13 @@ def test():
     nii = NTURGB3DInputIterator(nturgbd_video_info=video_info_csv, skele_motion_root=skele_motion_root,
                                 batch_size=batch_size, seq_len=seq_len, unit_test=True)
 
-    pipeline = NTURGBD3DPipeline(batch_size=batch_size, sequence_length=seq_len, num_threads=1, device_id=0,
+    pipeline = NTURGBD3DPipeline(batch_size=batch_size, seq_length=seq_len, num_threads=1, device_id=0,
                                  nturgbd_input_data=nii)
 
     pipeline.build()
 
     images, sk_seqs = pipeline.run()
+
     show_images(images, batch_size, seq_len)
     pass
 
