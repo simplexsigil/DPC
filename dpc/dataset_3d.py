@@ -737,7 +737,7 @@ class DatasetUtils:
             return [None]
 
         # Randomly start anywhere within the video (as long as the remainder is long enough).
-        start_idx = np.random.choice(range(vlen - seq_len * downsample))
+        start_idx = np.random.choice(range(vlen - seq_len * downsample)) if vlen - seq_len * downsample > 0 else 0
 
         seq_idxs = start_idx + np.arange(seq_len) * downsample
 
