@@ -259,7 +259,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  nturgbd_video_info=None,
                  skele_motion_root=None,
                  split_mode="perc",
-                 split_frac=0.1):
+                 split_frac=0.1,
+                 sample_limit=None):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -274,7 +275,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
         self.video_info_skeletons = {}
 
-        self.sample_info = ndu.read_video_info(nturgbd_video_info)
+        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit)
 
         v_file_count = len(self.sample_info)
 
@@ -367,7 +368,7 @@ class NTURGB3DInputIterator(object):
                  return_label=False,
                  split_mode="perc",
                  split_frac=0.1,
-                 unit_test=False):
+                 sample_limit=None):
         print('Using the NVIDIA DALI pipeline for data loading and preparation via GPU.')
 
         self.batch_size = batch_size
@@ -386,10 +387,7 @@ class NTURGB3DInputIterator(object):
 
         self.video_info_skeletons = {}
 
-        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=11 if unit_test else None)
-
-        if unit_test:
-            self.sample_info = self.sample_info.iloc[:11]
+        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit)
 
         v_file_count = len(self.sample_info)
 
@@ -606,6 +604,7 @@ class NTURGB3DInputIterator(object):
         else:
             return img_seq, self.random_image_transforms(len(frame_indices))
 
+import time
 
 class NTURGBD3DPipeline(Pipeline):
     """
@@ -620,6 +619,8 @@ class NTURGBD3DPipeline(Pipeline):
                                                 prefetch_queue_depth=4)
         self.external_data = nturgbd_input_data
         self.iterator = iter(self.external_data)
+
+        self.loading_times = []
 
         self.input_imgs = ops.ExternalSource(device="cpu")
         self.input_angles = ops.ExternalSource(
@@ -678,8 +679,15 @@ class NTURGBD3DPipeline(Pipeline):
 
     def iter_setup(self):
         try:
+            start_loading = time.perf_counter()
             img_seqs, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seqs = next(
                 self.iterator)
+            end_loading = time.perf_counter()
+
+            self.loading_times.append(end_loading - start_loading)
+
+            if len(self.loading_times) == 100:
+                print("Image loading average time: {}".format(np.mean(self.loading_times)))
 
             # The parameters for the transformations are also provided.
             self.feed_input(self.img_seq, img_seqs)

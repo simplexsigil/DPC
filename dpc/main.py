@@ -36,6 +36,7 @@ parser.add_argument('--model', default='skelcont', type=str)
 parser.add_argument('--rgb_net', default='resnet18', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
+parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--distance_function', default='cosine', type=str)
@@ -212,7 +213,8 @@ def main():
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch, train_len)
+        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
+                                                                                  train_len)
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch, val_len)
 
         # save curve
@@ -257,6 +259,9 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
     tic = time.time()
 
     for idx, out in enumerate(data_loader):
+        stop_time = time.perf_counter()  # Timing data loading
+        data_loading_times.append(stop_time - start_time)
+
         if not args.use_dali:
             (input_seq, sk_seq) = out
         else:
@@ -273,9 +278,6 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
             sk_seq = sk_seq.view(args.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
             # (Ba, Bo, C, T, J)
 
-        stop_time = time.perf_counter()  # Timing data loading
-        data_loading_times.append(stop_time - start_time)
-
         start_time = time.perf_counter()  # Timing cuda transfer
 
         input_seq = input_seq.to(cuda)
@@ -286,8 +288,6 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
         cuda_transfer_times.append(stop_time - start_time)
 
         start_time = time.perf_counter()  # Timing calculation
-
-
 
         B = input_seq.size(0)
 
@@ -408,7 +408,8 @@ def get_data(transform, mode='train'):
                                  downsample=args.ds,
                                  nturgbd_video_info=args.nturgbd_video_info,
                                  skele_motion_root=args.nturgbd_skele_motion,
-                                 split_mode=args.split_mode)
+                                 split_mode=args.split_mode,
+                                 sample_limit=args.max_samples)
         else:
             raise ValueError('dataset not supported')
 
@@ -433,7 +434,8 @@ def get_data(transform, mode='train'):
             seq_len=args.seq_len,
             downsample=args.ds,
             split_mode=args.split_mode,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            sample_limit=args.max_samples
             )
 
         pipe = NTURGBD3DPipeline(batch_size=args.batch_size, seq_length=args.seq_len, num_threads=16, device_id=0,
