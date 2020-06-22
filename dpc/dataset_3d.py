@@ -731,7 +731,7 @@ class DatasetUtils:
     @staticmethod
     def idx_sampler(vlen, seq_len, downsample, vpath):
         '''sample index from a video'''
-        if vlen - seq_len * downsample <= 0:
+        if vlen - seq_len * downsample < 0:
             print("Tried to sample a video which is too short. This should not happen after filtering short videos."
                   "\nVideo path: {}".format(vpath))
             return [None]
