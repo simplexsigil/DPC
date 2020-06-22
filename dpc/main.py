@@ -217,6 +217,10 @@ def main():
                                                                                   train_len)
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch, val_len)
 
+        if args.use_dali:
+            train_loader.reset()
+            val_loader.reset()
+
         # save curve
         writer_train.add_scalar('global/loss', train_loss, epoch)
         writer_train.add_scalar('global/accuracy', train_acc, epoch)
@@ -354,7 +358,23 @@ def validate(data_loader, model, epoch, val_len):
     model.eval()
 
     with torch.no_grad():
-        for idx, (input_seq, sk_seq) in tqdm(enumerate(data_loader), total=val_len):
+        for idx, out in tqdm(enumerate(data_loader), total=val_len):
+            if not args.use_dali:
+                (input_seq, sk_seq) = out
+            else:
+                input_seq, sk_seq = out[0]["img_seq"], out[0]["sk_seq"]
+                (BF, C, H, W) = input_seq.shape
+                input_seq = input_seq.view(args.batch_size, args.seq_len, C, H, W)
+
+                input_seq = input_seq.transpose(1, 2).float()
+                # [B, C, SL, H, W]
+
+                (BF, sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
+                sk_seq = sk_seq.view(args.batch_size, args.seq_len, sk_Bo, sk_C, sk_T, sk_J)
+                sk_seq = sk_seq[:, 0, :]
+                sk_seq = sk_seq.view(args.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
+                # (Ba, Bo, C, T, J)
+
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
 
