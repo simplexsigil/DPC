@@ -244,6 +244,8 @@ class NTURGBD3DPipeline(Pipeline):
 
         self.loading_times = []
 
+        self.batch_order = ops.ExternalSource(device="cpu")
+
         self.input_imgs = ops.ExternalSource(device="cpu")
 
         # Somehow the parameters for the operations have to be on CPU.
@@ -259,7 +261,7 @@ class NTURGBD3DPipeline(Pipeline):
 
         self.input_sk_seq = ops.ExternalSource(device="cpu")
 
-        self.img_dec = ops.ImageDecoder(device="mixed", bytes_per_sample_hint=360000)
+        self.img_dec = ops.ImageDecoder(device="mixed", bytes_per_sample_hint=500000, device_memory_padding=500000)
 
         self.rrot = ops.Rotate(interp_type=types.INTERP_LINEAR, device="gpu")  # angle=10,
         self.rcrop = ops.Crop(device="gpu")
@@ -273,6 +275,8 @@ class NTURGBD3DPipeline(Pipeline):
             output_layout=output_layout)
 
     def define_graph(self):
+        self.batch_order_id = self.batch_order()
+
         self.img_seq = self.input_imgs()
 
         self.in_angle = self.input_angles()
@@ -296,9 +300,10 @@ class NTURGBD3DPipeline(Pipeline):
         image = self.rrsize(image)
         image = self.rhsv(image, hue=self.in_hue, saturation=self.in_saturation, value=self.in_value)
 
-        if self.normalize: image = self.normalize(image)
+        if self.normalize:
+            image = self.normalize(image)
 
-        return image.gpu(), self.sk_seq.gpu()
+        return image.gpu(), self.sk_seq.gpu(), self.batch_order_id
 
     def iter_setup(self):
         try:
@@ -308,6 +313,9 @@ class NTURGBD3DPipeline(Pipeline):
 
             img_seqs = [img for seq in img_seqs for img in seq]
             sk_seqs = np.stack(sk_seqs, 0)
+
+            if not sk_seqs.dtype == np.float32:
+                sk_seqs = sk_seqs.astype(np.float32)
 
             (B, Bo, C, T, J) = sk_seqs.shape
             sk_seqs = sk_seqs.repeat(T, axis=0)
@@ -325,8 +333,11 @@ class NTURGBD3DPipeline(Pipeline):
 
             self.loading_times.append(end_loading - start_loading)
 
-            if len(self.loading_times) == 100:
+            if len(self.loading_times) == len(self.external_data):
                 print("Image loading average time: {}".format(np.mean(self.loading_times)))
+                self.loading_times = []
+
+            self.feed_input(self.batch_order_id, np.arange(start=0, stop=len(img_seqs), dtype=np.int32))
 
             # The parameters for the transformations are also provided.
             self.feed_input(self.img_seq, img_seqs)
@@ -361,7 +372,8 @@ class NTURGBD3DDali:
                  split_frac=0.1,
                  sample_limit=None,
                  num_workers_loader=0,
-                 num_workers_dali=0):
+                 num_workers_dali=0,
+                 dali_prefetch_queue_depth=2):
         self.split = split
         self.split_mode = split_mode
         self.seq_len = seq_len
@@ -383,11 +395,13 @@ class NTURGBD3DDali:
                                        split_frac=split_frac,
                                        sample_limit=sample_limit)
 
+        sampler = torch.utils.data.SequentialSampler(self.nir)
+
         # The nir loader provides batches with data shape (D,B,F,...) where D is the number of value types
         # (image buffers, skeleton data, augmentation settings etc.) The dimension D describes a list.
         self.nir_loader = data.DataLoader(dataset=self.nir, batch_size=batch_size, shuffle=False,
-                                          num_workers=num_workers_loader, pin_memory=False,
-                                          collate_fn=NTURGBD3DDali.list_collate)
+                                          num_workers=num_workers_loader, pin_memory=True,
+                                          collate_fn=NTURGBD3DDali.list_collate, sampler=sampler, drop_last=True)
 
         # The DALI pipeline is really not good with handling video sequences, so actually the frames are handled like
         # individual batch samples. The pipeline completely encapsulates this behaviour for the input, but we
@@ -396,23 +410,49 @@ class NTURGBD3DDali:
                                           num_threads=num_workers_dali,
                                           nturgbd_input_loader=self.nir_loader,
                                           device_id=0,
-                                          prefetch_queue_depth=2,
+                                          prefetch_queue_depth=dali_prefetch_queue_depth,
                                           seed=42,
                                           output_layout="CHW")
 
         self.pipeline.build()
+        self.first_run = True
+        self.pipeline.schedule_run()
 
     def __iter__(self):
-        pass
+        if not self.first_run:
+            self.pipeline.reset()
+            self.pipeline.schedule_run()
+        else:
+            self.first_run = False
+
+        return self
 
     def __next__(self):
-        input_seq_dali, sk_seq_dali = self.pipeline.run()  # (B*T, ...)
+        input_seq_dali, sk_seq_dali, batch_order = self.pipeline.share_outputs()  # (B*T, ...)
+        input_seq_dali = input_seq_dali.as_tensor()
+        sk_seq_dali = sk_seq_dali.as_tensor()
+        batch_order = batch_order.as_array()
 
-        input_seq = torch.zeros(input_seq_dali.shape(), dtype=torch.float32)
-        sk_seq = torch.zeros(sk_seq_dali.shape(), dtype=torch.float32)
+        in_order = True
+        for idx, i in enumerate(batch_order):
+            if idx != int(i):
+                in_order = False
 
-        ndpt.feed_ndarray(input_seq_dali, input_seq, cuda_stream=torch.cuda.current_stream())
-        ndpt.feed_ndarray(sk_seq_dali, sk_seq, cuda_stream=torch.cuda.current_stream())
+        assert in_order, "The batch returned by the Dali Pipeline was found not to be in the same order " \
+                         "as it was provided. This is a problem because we flatten the image sequences to be handled" \
+                         "like individual frames and now we want to reshape them back into sequence samples."
+
+        cuda_device = torch.cuda.current_device()
+        cuda_stream = torch.cuda.current_stream()
+
+        input_seq = torch.zeros(input_seq_dali.shape(), dtype=torch.float32, device=cuda_device)
+        ndpt.feed_ndarray(input_seq_dali, input_seq, cuda_stream=cuda_stream)
+
+        sk_seq = torch.zeros(sk_seq_dali.shape(), dtype=torch.float32, device=cuda_device)
+        ndpt.feed_ndarray(sk_seq_dali, sk_seq, cuda_stream=cuda_stream)
+
+        self.pipeline.release_outputs()
+        self.pipeline.schedule_run()
 
         (BF, C, H, W) = input_seq.shape
         input_seq = input_seq.view(self.batch_size, self.seq_len, C, H, W)
@@ -426,8 +466,13 @@ class NTURGBD3DDali:
         sk_seq = sk_seq.view(self.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
         # (Ba, Bo, C, T, J)
 
+        # print("Tensor size image seqs in bytes: {}".format(input_seq.element_size() * input_seq.nelement()))
+        # print("Tensor size sk seqs in bytes: {}".format(sk_seq.element_size() * sk_seq.nelement()))
+
+        return input_seq, sk_seq
+
     def __len__(self):
-        len(self.nir_loader)
+        return len(self.nir_loader)
 
     @staticmethod
     def list_collate(batch):
@@ -447,6 +492,9 @@ class NTURGBD3DDali:
                 elems[i].append(sample[i])
 
         return elems
+
+    def reset(self):
+        self.pipeline.reset()
 
 
 import matplotlib.pyplot as plt

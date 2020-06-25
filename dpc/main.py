@@ -7,17 +7,19 @@ from tensorboardX import SummaryWriter
 
 plt.switch_backend('agg')
 
-sys.path.insert(0,
-                '../utils')  # If that is the way to include paths for this project, then why not also for 'backbone'?
+sys.path.insert(0, '../utils')
 sys.path.insert(0, '../eval')
 sys.path.insert(0, '../backbone')
 
 from dataset_3d import *
+from dataset_nturgbd import *
+from dataset_nturgbd_dali import *
 from model_3d import *
 from resnet_2d3d import neq_load_customized
 from augmentation import *
 from utils import AverageMeter, save_checkpoint, denorm, calc_topk_accuracy
 from datetime import datetime
+import re
 
 import torch
 import torch.optim as optim
@@ -40,7 +42,7 @@ parser.add_argument('--max_samples', default=None, type=int, help='Maximum numbe
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--distance_function', default='cosine', type=str)
-parser.add_argument('--batch_size', default=10, type=int)
+parser.add_argument('--batch_size', default=15, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -51,8 +53,12 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--loader_workers', default=2, type=int,
+parser.add_argument('--loader_workers', default=16, type=int,
                     help='number of data loader workers to pre load batch data.')
+parser.add_argument('--dali_workers', default=16, type=int,
+                    help='number of dali workers to pre load batch data.')
+parser.add_argument('--dali_prefetch_queue', default=2, type=int,
+                    help='number of samples to prefetch in GPU memory.')
 parser.add_argument('--train_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),
                     type=str)
@@ -266,21 +272,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
         stop_time = time.perf_counter()  # Timing data loading
         data_loading_times.append(stop_time - start_time)
 
-        if not args.use_dali:
-            (input_seq, sk_seq) = out
-        else:
-            input_seq, sk_seq = out[0]["img_seq"], out[0]["sk_seq"]
-            (BF, C, H, W) = input_seq.shape
-            input_seq = input_seq.view(args.batch_size, args.seq_len, C, H, W)
-
-            input_seq = input_seq.transpose(1, 2).float()
-            # [B, C, SL, H, W]
-
-            (BF, sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
-            sk_seq = sk_seq.view(args.batch_size, args.seq_len, sk_Bo, sk_C, sk_T, sk_J)
-            sk_seq = sk_seq[:, 0, :]
-            sk_seq = sk_seq.view(args.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
-            # (Ba, Bo, C, T, J)
+        input_seq, sk_seq = out
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
@@ -359,21 +351,7 @@ def validate(data_loader, model, epoch, val_len):
 
     with torch.no_grad():
         for idx, out in tqdm(enumerate(data_loader), total=val_len):
-            if not args.use_dali:
-                (input_seq, sk_seq) = out
-            else:
-                input_seq, sk_seq = out[0]["img_seq"], out[0]["sk_seq"]
-                (BF, C, H, W) = input_seq.shape
-                input_seq = input_seq.view(args.batch_size, args.seq_len, C, H, W)
-
-                input_seq = input_seq.transpose(1, 2).float()
-                # [B, C, SL, H, W]
-
-                (BF, sk_Bo, sk_C, sk_T, sk_J) = sk_seq.shape
-                sk_seq = sk_seq.view(args.batch_size, args.seq_len, sk_Bo, sk_C, sk_T, sk_J)
-                sk_seq = sk_seq[:, 0, :]
-                sk_seq = sk_seq.view(args.batch_size, sk_Bo, sk_C, sk_T, sk_J).float()
-                # (Ba, Bo, C, T, J)
+            input_seq, sk_seq = out
 
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
@@ -447,25 +425,22 @@ def get_data(transform, mode='train'):
         return data_loader, len(data_loader)
 
     else:
-        nii = NTURGB3DInputIterator(
+        data_loader = NTURGBD3DDali(
+            batch_size=args.batch_size,
             split=mode,
-            nturgbd_video_info=args.nturgbd_video_info,
-            skele_motion_root=args.nturgbd_skele_motion,
             seq_len=args.seq_len,
             downsample=args.ds,
+            nturgbd_video_info=args.nturgbd_video_info,
+            skele_motion_root=args.nturgbd_skele_motion,
             split_mode=args.split_mode,
-            batch_size=args.batch_size,
-            sample_limit=args.max_samples
+            sample_limit=args.max_samples,
+            num_workers_loader=args.loader_workers,
+            num_workers_dali=args.dali_workers,
+            dali_prefetch_queue_depth=args.dali_prefetch_queue
             )
 
-        pipe = NTURGBD3DPipeline(batch_size=args.batch_size, seq_length=args.seq_len, num_threads=16, device_id=0,
-                                 nturgbd_input_data=nii)
-
-        import nvidia.dali.plugin.pytorch as dali
-        data_loader = dali.DALIGenericIterator([pipe], output_map=["img_seq", "sk_seq"], size=-1)
-
-        print('Using DALI. {} dataset size: {}'.format(mode, len(nii)))
-        return data_loader, len(nii)
+        print('Using DALI. {} dataset size: {}'.format(mode, len(data_loader)))
+        return data_loader, len(data_loader)
 
 
 def set_path(args):
