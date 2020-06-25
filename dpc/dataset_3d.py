@@ -40,18 +40,7 @@ class DatasetUtils:
     @staticmethod
     def filter_too_short(video_info: pd.DataFrame, min_frame_count: int):
         # Filtering videos based on min length.
-
-        old_count = len(video_info)
-
-        print("Dropping videos with less than {} frames".format(min_frame_count))
         video_info = video_info.loc[video_info["frame_count"] >= min_frame_count]
-
-        new_count = len(video_info)
-
-        print("Discarded {} of {} videos since they were shorter than the necessary {} frames.".format(
-            old_count - new_count,
-            old_count,
-            min_frame_count))
 
         return video_info
 

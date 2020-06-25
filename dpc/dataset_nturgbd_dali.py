@@ -55,8 +55,9 @@ class NTURGB3DInputReader(data.Dataset):
                  return_label=False,
                  split_mode="perc",
                  split_frac=0.1,
-                 sample_limit=None):
-        print('Using the NVIDIA DALI pipeline for data loading and preparation via GPU.')
+                 sample_limit=None,
+                 image_min_height=150,
+                 image_min_width=266):
         self.split = split
         self.seq_len = seq_len
         self.downsample = downsample
@@ -64,35 +65,40 @@ class NTURGB3DInputReader(data.Dataset):
         self.split_mode = split_mode
         self.use_skeleton = skele_motion_root is not None
 
-        self.image_min_height = 150
-        self.image_min_width = 266
+        self.image_min_height = image_min_height
+        self.image_min_width = image_min_width
 
-        print('Using nturgbd data (150x150)')
+        self.sample_info = None
+        self.sk_info = None
+
         ndu = NTURGBDDatasetUtils
 
-        self.video_info_skeletons = {}
+        print("=================================")
+        print('Dataset NTURGBD {} split (Split method: {})'.format(split, split_mode))
+        if split_mode == "perc":
+            print("Train/Val ratio: {}/{}".format(1 - split_frac, split_frac))
+        print('Using the NVIDIA DALI pipeline for data loading and preparation via GPU.')
+        print("Assuming min image height {} and min image width {}".format(self.image_min_height, self.image_min_width))
 
         self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit)
 
-        v_file_count = len(self.sample_info)
-
         min_frame_count = self.seq_len * self.downsample
 
+        sample_count = len(self.sample_info)
         self.sample_info = ndu.filter_too_short(self.sample_info, min_frame_count)
+        print("Dropped {} of {} samples due to insufficient rgb video length ({} frames needed).".format(
+            sample_count - len(self.sample_info), sample_count, min_frame_count))
 
         sample_count = len(self.sample_info)
-
-        print("Dropped {} of {} samples due to insufficient rgb video length ({} frames needed).".format(
-            v_file_count - sample_count, v_file_count, min_frame_count))
-
         self.sample_info = ndu.filter_nturgbd_by_split_mode(self.sample_info, self.split, self.split_mode, split_frac)
-
+        print("Selected {} of {} video samples for the {} split.".format(len(self.sample_info), sample_count,
+                                                                         self.split))
+        sample_count = len(self.sample_info)
         self.sk_info = ndu.get_skeleton_info(skele_motion_root)
-
         self.sample_info = ndu.filter_by_missing_skeleton_info(self.sample_info, self.sk_info)
-
-        print("Dropped {} of {} samples due to missing skeleton information.".format(
-            sample_count - len(self.sample_info), sample_count))
+        print(
+            "Dropped {} of {} samples due to missing skeleton information.".format(sample_count - len(self.sample_info),
+                                                                                   sample_count))
 
         print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
 
@@ -103,6 +109,8 @@ class NTURGB3DInputReader(data.Dataset):
                     "Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " +
                     "it only reduces the samples used for validation in training among the val split.")
                 self.sample_info = self.sample_info.sample(n=500, random_state=666)
+
+        print("=================================")
 
     def __len__(self):
         return len(self.sample_info)
@@ -147,11 +155,11 @@ class NTURGB3DInputReader(data.Dataset):
             return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys
 
     def random_image_transforms(self, frame_count,
-                                rotation_range=(-30., 30.),
-                                hue_range=(-10, 10),
-                                saturation_range=(0., 2.),
-                                value_range=(0.5, 2.),
-                                hue_change_prop=0.5,
+                                rotation_range=(-45., 45.),
+                                hue_range=(-180, 180),
+                                saturation_range=(0., 4.),
+                                value_range=(0.2, 4.),
+                                hue_change_prop=1.,
                                 crop_area_range=(0.05, 1.)):
         # The same rotation for all frames.
         rotations = np.repeat(np.random.uniform(low=rotation_range[0], high=rotation_range[1]), repeats=frame_count)
@@ -333,9 +341,9 @@ class NTURGBD3DPipeline(Pipeline):
 
             self.loading_times.append(end_loading - start_loading)
 
-            if len(self.loading_times) == len(self.external_data):
-                print("Image loading average time: {}".format(np.mean(self.loading_times)))
-                self.loading_times = []
+            if len(self.loading_times) % len(self.external_data) == 0:
+                # This will be printed for every prefetch, so actually this might happen multiple times.
+                print("Image loading average time: {}".format(np.mean(self.loading_times[-len(self.external_data):])))
 
             self.feed_input(self.batch_order_id, np.arange(start=0, stop=len(img_seqs), dtype=np.int32))
 
@@ -395,7 +403,10 @@ class NTURGBD3DDali:
                                        split_frac=split_frac,
                                        sample_limit=sample_limit)
 
-        sampler = torch.utils.data.SequentialSampler(self.nir)
+        # Using a random samples is extremely important, otherwise the network learns the dataset by heart.
+        # TODO: How can it learn, which videos go together with seq sampler?
+        #       Videos are sampled on different positions each time.
+        sampler = torch.utils.data.RandomSampler(self.nir)
 
         # The nir loader provides batches with data shape (D,B,F,...) where D is the number of value types
         # (image buffers, skeleton data, augmentation settings etc.) The dimension D describes a list.

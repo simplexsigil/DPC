@@ -41,8 +41,8 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--distance_function', default='cosine', type=str)
-parser.add_argument('--batch_size', default=15, type=int)
+parser.add_argument('--distance_function', default='nt-xent', type=str)
+parser.add_argument('--batch_size', default=12, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -71,7 +71,7 @@ parser.add_argument('--nturgbd-video-info',
 parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/datasets/nturgbd/skele-motion"),
                     type=str)
 parser.add_argument('--split-mode', default="perc", type=str)
-parser.add_argument('--split-test-frac', default=0.1, type=float)
+parser.add_argument('--split-test-frac', default=0.2, type=float)
 
 global start_time
 global stop_time
@@ -95,7 +95,7 @@ def main():
 
     for i in args.gpu:
         print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
-    print("Cuda is available: {}".format(torch.cuda.is_available()))
+    # print("Cuda is available: {}".format(torch.cuda.is_available()))
     global cuda;
     cuda = torch.device('cuda')
 
@@ -382,8 +382,6 @@ def validate(data_loader, model, epoch, val_len):
 
 
 def get_data(transform, mode='train'):
-    print('Loading data for "%s" ...' % mode)
-    data_loader = None
     if not args.use_dali:
         if args.dataset == 'k400':
             use_big_K400 = args.img_dim > 140
@@ -421,7 +419,6 @@ def get_data(transform, mode='train'):
                                       pin_memory=True,
                                       drop_last=True)
 
-        print('"%s" dataset size: %d' % (mode, len(dataset)))
         return data_loader, len(data_loader)
 
     else:
@@ -439,7 +436,6 @@ def get_data(transform, mode='train'):
             dali_prefetch_queue_depth=args.dali_prefetch_queue
             )
 
-        print('Using DALI. {} dataset size: {}'.format(mode, len(data_loader)))
         return data_loader, len(data_loader)
 
 
