@@ -1,6 +1,5 @@
 import argparse
 import sys
-import os
 
 import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
@@ -80,7 +79,7 @@ global stop_time
 def main():
     torch.manual_seed(0)
     np.random.seed(0)
-    global args;
+    global args
     args = parser.parse_args()
     os.environ[
         "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
@@ -96,7 +95,7 @@ def main():
     for i in args.gpu:
         print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
     # print("Cuda is available: {}".format(torch.cuda.is_available()))
-    global cuda;
+    global cuda
     cuda = torch.device('cuda')
 
     ### dpc model ###
@@ -110,7 +109,9 @@ def main():
         raise ValueError('wrong model!')
 
     # Data Parallel uses a master device (default gpu 0) and performs scatter gather operations on batches and resulting gradients.
-    model = nn.DataParallel(model)  # Distributes batches on mutiple devices to train model in parallel automatically.
+    # Distributes batches on mutiple devices to train model in parallel automatically.
+    # If we use
+    model = nn.DataParallel(model, device_ids=args.gpu if len(args.gpu) < 2 or not args.use_dali else args.gpu[0:-1])
     model = model.to(cuda)  # Sends model to device 0, other gpus are used automatically.
     global criterion
     criterion = nn.CrossEntropyLoss()  # Contrastive loss is basically CrossEntropyLoss with vector similarity and temperature.
@@ -433,7 +434,8 @@ def get_data(transform, mode='train'):
             sample_limit=args.max_samples,
             num_workers_loader=args.loader_workers,
             num_workers_dali=args.dali_workers,
-            dali_prefetch_queue_depth=args.dali_prefetch_queue
+            dali_prefetch_queue_depth=args.dali_prefetch_queue,
+            dali_devices=[args.gpu[-1]]
             )
 
         return data_loader, len(data_loader)

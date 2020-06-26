@@ -169,7 +169,7 @@ class SkeleContrast(nn.Module):
             xy_n = torch.matmul(x_norm, y_norm.transpose(0, 1))
             xy_nt = xy_n / temp_tao
 
-            return -xy_nt
+            return 1 - xy_nt
         else:
             raise (ValueError('Unsupported similarity function'))
 

@@ -71,6 +71,13 @@ class NTURGB3DInputReader(data.Dataset):
         self.sample_info = None
         self.sk_info = None
 
+        self.aug_rotation_range = (-10., 10.)
+        self.aug_hue_range = (-3, 3)
+        self.aug_saturation_range = (0., 1.3)
+        self.aug_value_range = (0.5, 1.5)
+        self.aug_hue_change_prop = 0.5
+        self.aug_crop_area_range = (0.15, 1.)
+
         ndu = NTURGBDDatasetUtils
 
         print("=================================")
@@ -104,11 +111,11 @@ class NTURGB3DInputReader(data.Dataset):
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.split == "val":
-            if len(self.sample_info) > 500:
+            if len(self.sample_info) > 1000:
                 print(
                     "Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " +
                     "it only reduces the samples used for validation in training among the val split.")
-                self.sample_info = self.sample_info.sample(n=500, random_state=666)
+                self.sample_info = self.sample_info.sample(n=1000, random_state=666)
 
         print("=================================")
 
@@ -155,12 +162,19 @@ class NTURGB3DInputReader(data.Dataset):
             return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys
 
     def random_image_transforms(self, frame_count,
-                                rotation_range=(-45., 45.),
-                                hue_range=(-180, 180),
-                                saturation_range=(0., 4.),
-                                value_range=(0.2, 4.),
-                                hue_change_prop=1.,
-                                crop_area_range=(0.05, 1.)):
+                                rotation_range=None,
+                                hue_range=None,
+                                saturation_range=None,
+                                value_range=None,
+                                hue_change_prop=None,
+                                crop_area_range=None):
+        rotation_range = self.aug_rotation_range if rotation_range is None else rotation_range
+        hue_range = self.aug_hue_range if hue_range is None else hue_range
+        saturation_range = self.aug_saturation_range if saturation_range is None else saturation_range
+        value_range = self.aug_value_range if value_range is None else value_range
+        hue_change_prop = self.aug_hue_change_prop if hue_change_prop is None else hue_change_prop
+        crop_area_range = self.aug_crop_area_range if crop_area_range is None else crop_area_range
+
         # The same rotation for all frames.
         rotations = np.repeat(np.random.uniform(low=rotation_range[0], high=rotation_range[1]), repeats=frame_count)
         rotations = rotations.astype(np.float32)
@@ -247,7 +261,7 @@ class NTURGBD3DPipeline(Pipeline):
         self.external_data = nturgbd_input_loader
         self.iterator = iter(self.external_data)
 
-        self.normalize = normalize
+        self.output_normalized = normalize
         self.output_layout = output_layout
 
         self.loading_times = []
@@ -275,12 +289,17 @@ class NTURGBD3DPipeline(Pipeline):
         self.rcrop = ops.Crop(device="gpu")
         self.rrsize = ops.Resize(resize_x=128., resize_y=128., interp_type=types.INTERP_TRIANGULAR, device="gpu")
         self.rhsv = ops.Hsv(device="gpu")
-        self.normalize = ops.CropMirrorNormalize(
-            device="gpu",
-            mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
-            std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
-            mirror=0,
-            output_layout=output_layout)
+
+        if self.output_normalized:
+            self.normalize = ops.CropMirrorNormalize(
+                device="gpu",
+                mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+                std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
+                mirror=0,
+                output_layout=output_layout)
+        else:
+            self.transpose = ops.Transpose(perm=[0, 1, 2], transpose_layout=False, output_layout=output_layout,
+                                           device="gpu")
 
     def define_graph(self):
         self.batch_order_id = self.batch_order()
@@ -308,8 +327,10 @@ class NTURGBD3DPipeline(Pipeline):
         image = self.rrsize(image)
         image = self.rhsv(image, hue=self.in_hue, saturation=self.in_saturation, value=self.in_value)
 
-        if self.normalize:
+        if self.output_normalized:
             image = self.normalize(image)
+        else:
+            image = self.transpose(image)
 
         return image.gpu(), self.sk_seq.gpu(), self.batch_order_id
 
@@ -381,7 +402,8 @@ class NTURGBD3DDali:
                  sample_limit=None,
                  num_workers_loader=0,
                  num_workers_dali=0,
-                 dali_prefetch_queue_depth=2):
+                 dali_prefetch_queue_depth=2,
+                 dali_devices=(0,)):
         self.split = split
         self.split_mode = split_mode
         self.seq_len = seq_len
@@ -391,6 +413,7 @@ class NTURGBD3DDali:
         self.use_skeleton = skele_motion_root is not None
         self.batch_size = batch_size
         self.seq_len = seq_len
+        self.dali_devices = dali_devices
 
         # The input reader handles loading video samples from disk. Decoding is done via DALI, buffer loading only.
         self.nir = NTURGB3DInputReader(nturgbd_video_info=nturgbd_video_info,
@@ -420,7 +443,7 @@ class NTURGBD3DDali:
         self.pipeline = NTURGBD3DPipeline(batch_size=batch_size * seq_len,
                                           num_threads=num_workers_dali,
                                           nturgbd_input_loader=self.nir_loader,
-                                          device_id=0,
+                                          device_id=dali_devices[0],
                                           prefetch_queue_depth=dali_prefetch_queue_depth,
                                           seed=42,
                                           output_layout="CHW")
@@ -547,7 +570,7 @@ def test():
 
     pipeline.build()
 
-    images, sk_seqs = pipeline.run()
+    images, sk_seqs, batch_order = pipeline.run()
 
     show_images(images, batch_size, seq_len)
     pass
