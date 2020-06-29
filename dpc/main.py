@@ -42,7 +42,7 @@ parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--score_function', default='nt-xent', type=str)
 parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--batch_size', default=12, type=int)
+parser.add_argument('--batch_size', default=14, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str, help='path of model to resume')
@@ -191,7 +191,7 @@ def main():
     elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
 
         augmentation_settings = {
-            "rot_range":      (-15., 15.),
+            "rot_range":      (-30., 30.),
             "hue_range":      (-180, 180),
             "sat_range":      (0., 1.3),
             "val_range":      (0.5, 1.5),
