@@ -53,9 +53,9 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--loader_workers', default=16, type=int,
+parser.add_argument('--loader_workers', default=0, type=int,
                     help='number of data loader workers to pre load batch data.')
-parser.add_argument('--dali_workers', default=16, type=int,
+parser.add_argument('--dali_workers', default=1, type=int,
                     help='number of dali workers to pre load batch data.')
 parser.add_argument('--dali_prefetch_queue', default=2, type=int,
                     help='number of samples to prefetch in GPU memory.')
@@ -305,7 +305,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
 
         # print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
 
-        score = model(input_seq, sk_seq)
+        score, targets = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (
                 iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
@@ -317,7 +317,10 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
                                    iteration)
         del input_seq, sk_seq
 
-        target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
+        # print(targets)
+        target_flattened = torch.LongTensor(targets).detach().cuda()  # It's the diagonal.
+
+        print(target_flattened)
 
         loss = criterion(score, target_flattened)
 
@@ -374,11 +377,11 @@ def validate(data_loader, model, epoch, val_len):
             input_seq = input_seq.to(cuda)
             B = input_seq.size(0)
 
-            score = model(input_seq, sk_seq)
+            score, targets = model(input_seq, sk_seq)
 
             del input_seq, sk_seq
 
-            target_flattened = torch.arange(score.size(0)).detach().cuda()  # It's the diagonal.
+            target_flattened = torch.LongTensor(targets).detach().cuda()  # It's the diagonal.
 
             loss = criterion(score, target_flattened)
 

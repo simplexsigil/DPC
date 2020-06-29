@@ -79,6 +79,14 @@ class NTURGB3DInputReader(data.Dataset):
         self.aug_hue_change_prop = 0.5 if aug_settings is None else aug_settings["hue_prob"]
         self.aug_crop_area_range = (0.15, 1.) if aug_settings is None else aug_settings["crop_arr_range"]
 
+        if self.split == "test":
+            self.aug_rotation_range = (0., 0)
+            self.aug_hue_range = (0., 0.)
+            self.aug_saturation_range = (1., 1.)
+            self.aug_value_range = (1., 1.)
+            self.aug_hue_change_prop = 0.
+            self.aug_crop_area_range = (1., 1.)
+
         ndu = NTURGBDDatasetUtils
 
         print("=================================")

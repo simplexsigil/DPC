@@ -107,7 +107,10 @@ class SkeleContrast(nn.Module):
         # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
         score = self.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
 
-        return score
+        targets = list(range(len(score)))
+        print("Forward on device {} targets: {}".format(block_rgb.device, targets))
+
+        return score, targets
 
     def pairwise_scores(self,
                         x: torch.Tensor,
@@ -143,7 +146,7 @@ class SkeleContrast(nn.Module):
             cosine_similarities = (expanded_x * expanded_y).sum(dim=2)
             return 1 - cosine_similarities
         elif matching_fn == 'dot':
-            return - torch.matmul(x, y.transpose(0, 1))
+            return torch.matmul(x, y.transpose(0, 1))
 
         elif matching_fn == "nt-xent":
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
