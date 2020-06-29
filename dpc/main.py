@@ -199,9 +199,10 @@ def main():
             }
 
         transform = transforms.Compose([
-            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
+            RandomSizedCrop(size=args.img_dim, consistent=True),
+            ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
+                        saturation=augmentation_settings["sat_range"],
+                        hue=augmentation_settings["hue_range"]),
             ToTensor(),
             Normalize()
             ])
