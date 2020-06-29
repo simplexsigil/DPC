@@ -318,7 +318,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
         del input_seq, sk_seq
 
         # print(targets)
-        target_flattened = torch.LongTensor(targets).detach().cuda()  # It's the diagonal.
+        target_flattened = targets.detach()  # It's the diagonal.
 
         print(target_flattened)
 

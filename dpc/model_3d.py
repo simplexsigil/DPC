@@ -110,7 +110,7 @@ class SkeleContrast(nn.Module):
         targets = list(range(len(score)))
         print("Forward on device {} targets: {}".format(block_rgb.device, targets))
 
-        return score, targets
+        return score, torch.LongTensor(targets).to(block_rgb.device)
 
     def pairwise_scores(self,
                         x: torch.Tensor,
