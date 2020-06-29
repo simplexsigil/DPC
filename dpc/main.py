@@ -53,9 +53,9 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--train_what', default='all', type=str)
-parser.add_argument('--loader_workers', default=0, type=int,
+parser.add_argument('--loader_workers', default=16, type=int,
                     help='number of data loader workers to pre load batch data.')
-parser.add_argument('--dali_workers', default=1, type=int,
+parser.add_argument('--dali_workers', default=16, type=int,
                     help='number of dali workers to pre load batch data.')
 parser.add_argument('--dali_prefetch_queue', default=2, type=int,
                     help='number of samples to prefetch in GPU memory.')
@@ -317,10 +317,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
                                    iteration)
         del input_seq, sk_seq
 
-        # print(targets)
         target_flattened = targets.detach()  # It's the diagonal.
-
-        print(target_flattened)
 
         loss = criterion(score, target_flattened)
 
