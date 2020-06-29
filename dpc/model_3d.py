@@ -103,9 +103,9 @@ class SkeleContrast(nn.Module):
         pred_rgb = pred_rgb.contiguous()  # .view(B*N, D)
         pred_sk = pred_sk.contiguous()  # .view(B*N, D)
 
-        score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
+        # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        # score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
+        score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
 
         return score
 
@@ -159,10 +159,8 @@ class SkeleContrast(nn.Module):
             cosine_similarities = (expanded_x * expanded_y).sum(dim=2)
             return 1 - cosine_similarities
         elif matching_fn == 'dot':
-            expanded_x = x.unsqueeze(1).expand(n_x, n_y, -1)
-            expanded_y = y.unsqueeze(0).expand(n_x, n_y, -1)
+            return - torch.matmul(x, y.transpose(0, 1))
 
-            return -(expanded_x * expanded_y).sum(dim=2)
         elif matching_fn == "nt-xent":
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
             y_norm = y / torch.norm(y, dim=1, keepdim=True)
