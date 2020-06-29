@@ -165,6 +165,8 @@ def main():
         else:
             print("=> no checkpoint found at '{}'".format(args.pretrain))
 
+
+
     ### load data ###
     if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
         transform = transforms.Compose([
@@ -186,6 +188,16 @@ def main():
             Normalize()
             ])
     elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
+
+        augmentation_settings = {
+            "rot_range":      (0., 0.),
+            "hue_range":      (0, 0),
+            "sat_range":      (1., 1.),
+            "val_range":      (1., 1.),
+            "hue_prob":       0.0,
+            "crop_arr_range": (0.95, 1.)
+            }
+
         transform = transforms.Compose([
             RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
             RandomGray(consistent=False, p=0.5),
@@ -194,8 +206,8 @@ def main():
             Normalize()
             ])
 
-    train_loader, train_len = get_data(transform, 'train')
-    val_loader, val_len = get_data(transform, 'val')
+    train_loader, train_len = get_data(transform, 'train', augmentation_settings)
+    val_loader, val_len = get_data(transform, 'val', augmentation_settings)
 
     # setup tools
     global de_normalize
@@ -288,7 +300,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
 
         B = input_seq.size(0)
 
-        print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
+        # print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
 
         score = model(input_seq, sk_seq)
         # visualize
@@ -384,7 +396,7 @@ def validate(data_loader, model, epoch, val_len):
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
-def get_data(transform, mode='train'):
+def get_data(transform, mode='train', augmentation_settings=None):
     if not args.use_dali:
         if args.dataset == 'k400':
             use_big_K400 = args.img_dim > 140
@@ -437,7 +449,8 @@ def get_data(transform, mode='train'):
             num_workers_loader=args.loader_workers,
             num_workers_dali=args.dali_workers,
             dali_prefetch_queue_depth=args.dali_prefetch_queue,
-            dali_devices=[args.gpu[-1]]
+            dali_devices=[args.gpu[-1]],
+            aug_settings = augmentation_settings
             )
 
         return data_loader, len(data_loader)

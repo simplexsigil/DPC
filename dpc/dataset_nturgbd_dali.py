@@ -57,7 +57,8 @@ class NTURGB3DInputReader(data.Dataset):
                  split_frac=0.1,
                  sample_limit=None,
                  image_min_height=150,
-                 image_min_width=266):
+                 image_min_width=266,
+                 aug_settings=None):
         self.split = split
         self.seq_len = seq_len
         self.downsample = downsample
@@ -71,12 +72,12 @@ class NTURGB3DInputReader(data.Dataset):
         self.sample_info = None
         self.sk_info = None
 
-        self.aug_rotation_range = (-10., 10.)
-        self.aug_hue_range = (-3, 3)
-        self.aug_saturation_range = (0., 1.3)
-        self.aug_value_range = (0.5, 1.5)
-        self.aug_hue_change_prop = 0.5
-        self.aug_crop_area_range = (0.15, 1.)
+        self.aug_rotation_range = (-10., 10.) if aug_settings is None else aug_settings["rot_range"]
+        self.aug_hue_range = (-3, 3) if aug_settings is None else aug_settings["hue_range"]
+        self.aug_saturation_range = (0., 1.3) if aug_settings is None else aug_settings["sat_range"]
+        self.aug_value_range = (0.5, 1.5) if aug_settings is None else aug_settings["val_range"]
+        self.aug_hue_change_prop = 0.5 if aug_settings is None else aug_settings["hue_prob"]
+        self.aug_crop_area_range = (0.15, 1.) if aug_settings is None else aug_settings["crop_arr_range"]
 
         ndu = NTURGBDDatasetUtils
 
@@ -229,7 +230,7 @@ class NTURGB3DInputReader(data.Dataset):
         min_crop_length = math.ceil(math.sqrt(min_area_n * total_area))
         max_crop_length = math.floor(math.sqrt(max_area_n * total_area))
 
-        min_crop_length = max(min_crop_length, 1.)
+        min_crop_length = min(max(min_crop_length, 1.), image_shorter)
         max_crop_length = min(max_crop_length, image_shorter)
 
         crop_length = np.random.uniform(min_crop_length, max_crop_length)
@@ -403,7 +404,8 @@ class NTURGBD3DDali:
                  num_workers_loader=0,
                  num_workers_dali=0,
                  dali_prefetch_queue_depth=2,
-                 dali_devices=(0,)):
+                 dali_devices=(0,),
+                 aug_settings=None):
         self.split = split
         self.split_mode = split_mode
         self.seq_len = seq_len
@@ -424,7 +426,8 @@ class NTURGBD3DDali:
                                        split=split,
                                        split_mode=split_mode,
                                        split_frac=split_frac,
-                                       sample_limit=sample_limit)
+                                       sample_limit=sample_limit,
+                                       aug_settings=aug_settings)
 
         # Using a random samples is extremely important, otherwise the network learns the dataset by heart.
         # TODO: How can it learn, which videos go together with seq sampler?
