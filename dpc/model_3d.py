@@ -103,9 +103,9 @@ class SkeleContrast(nn.Module):
         pred_rgb = pred_rgb.contiguous()  # .view(B*N, D)
         pred_sk = pred_sk.contiguous()  # .view(B*N, D)
 
-        # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
+        score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
+        # score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
 
         return score
 
