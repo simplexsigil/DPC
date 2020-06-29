@@ -316,8 +316,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
                                        nrow=args.seq_len)),
                                    iteration)
         del input_seq, sk_seq
-
-        target_flattened = targets.detach()  # It's the diagonal.
+        target_flattened = targets.detach()  # It's the diagonals.
 
         loss = criterion(score, target_flattened)
 
@@ -378,7 +377,7 @@ def validate(data_loader, model, epoch, val_len):
 
             del input_seq, sk_seq
 
-            target_flattened = torch.LongTensor(targets).detach().cuda()  # It's the diagonal.
+            target_flattened = targets.detach()  # It's the diagonals.
 
             loss = criterion(score, target_flattened)
 
