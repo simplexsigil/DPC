@@ -40,7 +40,8 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--distance_function', default='nt-xent', type=str)
+parser.add_argument('--score_function', default='nt-xent', type=str)
+parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
 parser.add_argument('--batch_size', default=12, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
@@ -104,7 +105,7 @@ def main():
                               seq_len=args.seq_len,
                               network=args.rgb_net,
                               representation_size=args.representation_size,
-                              distance_function=args.distance_function)
+                              score_function=args.score_function)
     else:
         raise ValueError('wrong model!')
 
@@ -190,19 +191,20 @@ def main():
     elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
 
         augmentation_settings = {
-            "rot_range":      (0., 0.),
-            "hue_range":      (0, 0),
-            "sat_range":      (1., 1.),
-            "val_range":      (1., 1.),
-            "hue_prob":       0.0,
-            "crop_arr_range": (0.95, 1.)
+            "rot_range":      (-15., 15.),
+            "hue_range":      (-180, 180),
+            "sat_range":      (0., 1.3),
+            "val_range":      (0.5, 1.5),
+            "hue_prob":       0.5,
+            "crop_arr_range": (0.15, 1.)
             }
 
         transform = transforms.Compose([
+            RandomRotation(degree=augmentation_settings["rot_range"]),
             RandomSizedCrop(size=args.img_dim, consistent=True),
             ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
                         saturation=augmentation_settings["sat_range"],
-                        hue=augmentation_settings["hue_range"]),
+                        hue=[val / 360. for val in augmentation_settings["hue_range"]]),
             ToTensor(),
             Normalize()
             ])

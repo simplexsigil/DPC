@@ -19,11 +19,11 @@ class SkeleContrast(nn.Module):
     '''Module which performs contrastive learning by matching extracted feature
     vectors from the skele-motion skeleton representation and features extracted from RGB videos with a Resnet 18.'''
 
-    def __init__(self, img_dim, seq_len=30, network='resnet18', representation_size=1024, distance_function="dot"):
+    def __init__(self, img_dim, seq_len=30, network='resnet18', representation_size=1024, score_function="dot"):
         super(SkeleContrast, self).__init__()
         torch.cuda.manual_seed(233)
         print('Using SkeleContrast model.')
-        self.distance_function = distance_function
+        self.score_function = score_function
         self.sample_size = img_dim
         self.seq_len = seq_len
         self.last_duration = int(math.ceil(seq_len / 4))  # This is the sequence length after using the backbone
@@ -105,31 +105,15 @@ class SkeleContrast(nn.Module):
 
         # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        score = -self.pairwise_distances(x=pred_sk, y=pred_rgb, matching_fn=self.distance_function)
+        score = self.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
 
         return score
 
-    def pairwise_euc_dist(self, x1, x2):
-        s = torch.sum((x1 * x2), dim=1)
-
-        na = torch.reshape(s, [-1, 1])
-        nb = torch.reshape(s, [1, -1])
-
-        score = torch.matmul(x1, x2.transpose(0, 1))
-        d = nn.functional.relu(na - 2 * score + nb)
-        '''
-        mask = K.cast(K.equal(d, 0.0), dtype='float32')
-        d = d + mask * K.epsilon()
-        d = K.sqrt(d)
-        d = d * (1.0 - mask)
-        '''
-        return -d
-
-    def pairwise_distances(self,
-                           x: torch.Tensor,
-                           y: torch.Tensor,
-                           matching_fn: str,
-                           temp_tao=0.1) -> torch.Tensor:
+    def pairwise_scores(self,
+                        x: torch.Tensor,
+                        y: torch.Tensor,
+                        matching_fn: str,
+                        temp_tao=1.) -> torch.Tensor:
         """Efficiently calculate pairwise distances (or other similarity scores) between
         two sets of samples.
         # Arguments
@@ -167,7 +151,20 @@ class SkeleContrast(nn.Module):
             xy_n = torch.matmul(x_norm, y_norm.transpose(0, 1))
             xy_nt = xy_n / temp_tao
 
-            return 1 - xy_nt
+            return xy_nt
+
+        elif matching_fn == "nt-euclidean":
+            x_norm = x / torch.norm(x, dim=1, keepdim=True)
+            y_norm = y / torch.norm(y, dim=1, keepdim=True)
+
+            xy_norm = x_norm - y_norm
+
+            xy_dst = torch.matmul(xy_norm, xy_norm.transpose(0, 1))
+
+            xy_dst = torch.sqrt(xy_dst) / (2. * temp_tao)
+
+            return 1 - xy_dst
+
         else:
             raise (ValueError('Unsupported similarity function'))
 

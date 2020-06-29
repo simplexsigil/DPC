@@ -353,15 +353,16 @@ class ColorJitter(object):
 class RandomRotation:
     def __init__(self, consistent=True, degree=15, p=1.0):
         self.consistent = consistent
-        self.degree = degree 
+        self.degree_high = degree if isinstance(degree, numbers.Number) else degree[1]
+        self.degree_low = -degree if isinstance(degree, numbers.Number) else degree[0]
         self.threshold = p
     def __call__(self, imgmap):
         if random.random() < self.threshold: # do RandomRotation
             if self.consistent:
-                deg = np.random.randint(-self.degree, self.degree, 1)[0]
+                deg = np.random.randint(self.degree_low, self.degree_high, 1)[0]
                 return [i.rotate(deg, expand=True) for i in imgmap]
             else:
-                return [i.rotate(np.random.randint(-self.degree, self.degree, 1)[0], expand=True) for i in imgmap]
+                return [i.rotate(np.random.randint(self.degree_low, self.degree_high, 1)[0], expand=True) for i in imgmap]
         else: # don't do RandomRotation, do nothing
             return imgmap 
 
