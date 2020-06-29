@@ -288,6 +288,8 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
 
         B = input_seq.size(0)
 
+        print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
+
         score = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (
