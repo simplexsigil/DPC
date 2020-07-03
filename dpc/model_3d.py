@@ -115,7 +115,7 @@ class SkeleContrast(nn.Module):
                         x: torch.Tensor,
                         y: torch.Tensor,
                         matching_fn: str,
-                        temp_tao=1.) -> torch.Tensor:
+                        temp_tao=0.1) -> torch.Tensor:
         """Efficiently calculate pairwise distances (or other similarity scores) between
         two sets of samples.
         # Arguments
@@ -159,13 +159,18 @@ class SkeleContrast(nn.Module):
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
             y_norm = y / torch.norm(y, dim=1, keepdim=True)
 
-            xy_norm = x_norm - y_norm
+            B = x_norm.shape[0]
+            dist = torch.zeros((B, B)).to(x_norm.device)
 
-            xy_dst = torch.matmul(xy_norm, xy_norm.transpose(0, 1))
+            for i in range(B):
+                y_nroll = torch.roll(y_norm, shifts=-i, dims=0)
+                pdist = torch.nn.functional.pairwise_distance(x_norm, y_nroll)
+                dist[:, i] = pdist
 
-            xy_dst = torch.sqrt(xy_dst) / (2. * temp_tao)
+            for i in range(B):
+                dist[i, :] = torch.roll(dist[i, :], shifts=i, dims=0)
 
-            return 1 - xy_dst
+            return -dist
 
         else:
             raise (ValueError('Unsupported similarity function'))

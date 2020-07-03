@@ -29,6 +29,10 @@ import torchvision.utils as vutils
 # This way, cuda optimizes for the hardware available, if input size is always equal.
 torch.backends.cudnn.benchmark = True
 
+global start_time
+global stop_time
+global cuda_device
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
@@ -52,13 +56,13 @@ parser.add_argument('--print_freq', default=5, type=int, help='frequency of prin
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
-parser.add_argument('--train_what', default='all', type=str)
+parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
 parser.add_argument('--loader_workers', default=16, type=int,
-                    help='number of data loader workers to pre load batch data.')
+                    help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 parser.add_argument('--dali_workers', default=16, type=int,
-                    help='number of dali workers to pre load batch data.')
+                    help='Number of dali workers to pre load batch data. At least 1 worker is necessary.')
 parser.add_argument('--dali_prefetch_queue', default=2, type=int,
-                    help='number of samples to prefetch in GPU memory.')
+                    help='Number of samples to prefetch in GPU memory.')
 parser.add_argument('--train_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),
                     type=str)
@@ -73,34 +77,45 @@ parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/data
 parser.add_argument('--split-mode', default="perc", type=str)
 parser.add_argument('--split-test-frac', default=0.2, type=float)
 
-global start_time
-global stop_time
+
+def argument_checks(args):
+    """
+    This function performs non-obvious checks on the arguments provided. Most of these problems would also become
+    apparent when starting training, but depending on the dataset size, this might take some time. Fail fast.
+    """
+    assert not args.resume and args.pretrain, "Use of pretrained model and resuming training makes no sense."
+    calc_gpus = len(args.gpu)
+    calc_gpus = max(1, calc_gpus - 1) if args.use_dali else calc_gpus  # One GPU only used for DALI
+    assert args.batch_size % calc_gpus == 0, "Batch size has to be divisible by GPU count. DALI reduces GPUs by one."
+    assert args.loader_workers >= 0
+    assert args.dali_workers >= 1, "Minimum 1"
 
 
-def main():
-    torch.manual_seed(0)
-    np.random.seed(0)
-    global args
-    args = parser.parse_args()
-    os.environ[
-        "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
+def check_and_prepare_cuda(device_ids):
+    # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in device_ids])
 
     print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
     print('Available device count: {}'.format(torch.cuda.device_count()))
 
-    args.gpu = list(range(torch.cuda.device_count()))  # The device ids restart from 0 on the visible devices.
+    device_ids = list(range(torch.cuda.device_count()))  # The device ids restart from 0 on the visible devices.
 
     print("Note: Device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
 
-    for i in args.gpu:
+    for i in device_ids:
         print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
-    # print("Cuda is available: {}".format(torch.cuda.is_available()))
-    global cuda
-    cuda = torch.device('cuda')
 
-    ### dpc model ###
-    if args.model == 'skelcont':
+    print("Cuda is available: {}".format(torch.cuda.is_available()))
+
+    global cuda_device
+    cuda_device = torch.device('cuda')
+
+    return cuda_device, device_ids
+
+
+def select_and_prepare_model(model_name):
+    if model_name == 'skelcont':
         model = SkeleContrast(img_dim=args.img_dim,
                               seq_len=args.seq_len,
                               network=args.rgb_net,
@@ -109,64 +124,112 @@ def main():
     else:
         raise ValueError('wrong model!')
 
-    # Data Parallel uses a master device (default gpu 0) and performs scatter gather operations on batches and resulting gradients.
-    # Distributes batches on mutiple devices to train model in parallel automatically.
-    # If we use
-    model = nn.DataParallel(model, device_ids=args.gpu if len(args.gpu) < 2 or not args.use_dali else args.gpu[0:-1])
-    model = model.to(cuda)  # Sends model to device 0, other gpus are used automatically.
-    global criterion
-    criterion = nn.CrossEntropyLoss()  # Contrastive loss is basically CrossEntropyLoss with vector similarity and temperature.
+    return model
 
-    ### optimizer ###
-    if args.train_what == 'last':
+
+def check_and_prepare_parameters(model, training_focus):
+    if training_focus == 'except_resnet':
         for name, param in model.module.resnet.named_parameters():
             param.requires_grad = False
+
+    elif training_focus == 'all':
+        pass
     else:
-        pass  # train all layers
+        raise ValueError
 
     print('\n===========Check Grad============')
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
     print('=================================\n')
 
-    params = model.parameters()
-    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+
+def prepare_on_resume(model, optimizer, lr, resume_file):
+    if not os.path.isfile(resume_file):
+        print("####\n[Warning] no checkpoint found at '{}'\n####".format(args.resume))
+        raise FileNotFoundError
+    else:
+        old_lr = float(re.search('_lr(.+?)_', resume_file).group(1))
+
+        print("=> loading resumed checkpoint '{}'".format(resume_file))
+
+        checkpoint = torch.load(resume_file, map_location=torch.device('cpu'))
+
+        epoch = checkpoint['epoch']
+        iteration = checkpoint['iteration']
+        best_acc = checkpoint['best_acc']
+
+        # I assume this copies the CPU located parameters automatically to cuda.
+        model.load_state_dict(checkpoint['state_dict'])
+
+        if not lr:  # If not explicitly reset, load old optimizer.
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr = old_lr
+        else:
+            print('==== Resuming with lr {:.1e} (Last lr: {:.1e}) ===='.format(lr, old_lr))
+
+        print("=> loaded resumed checkpoint (epoch {}, lr {}) '{}' ".format(epoch, lr, resume_file))
+
+        return model, optimizer, epoch, iteration, best_acc, lr
+
+
+def prepare_on_pretrain(model, pretrain_file):
+    if not os.path.isfile(pretrain_file):
+        print("=> no checkpoint found at '{}'".format(args.pretrain))
+        raise FileNotFoundError
+    else:
+        print("=> loading pretrained checkpoint '{}'".format(pretrain_file))
+
+        checkpoint = torch.load(pretrain_file, map_location=torch.device('cpu'))
+        model = neq_load_customized(model, checkpoint['state_dict'])
+
+        print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
+
+        return model
+
+
+def main():
+    torch.manual_seed(0)
+    np.random.seed(0)
+
+    global args
+    args = parser.parse_args()
+
+    argument_checks(args)
+
+    global cuda_device  # Todo: Get rid of all these global variables.
+    cuda_device, device_ids = check_and_prepare_cuda(args.gpu)
+
+    model = select_and_prepare_model(args.model)
+
+    # Data Parallel uses a master device (default gpu 0) and performs scatter gather operations on batches and resulting gradients.
+    # Distributes batches on mutiple devices to train model in parallel automatically.
+    # If we use dali, the last device is used for data-loading only.
+    model = nn.DataParallel(model, device_ids=args.gpu if len(args.gpu) < 2 or not args.use_dali else args.gpu[0:-1])
+    model = model.to(cuda_device)  # Sends model to device 0, other gpus are used automatically.
+
+    global criterion
+    criterion = nn.CrossEntropyLoss()  # Contrastive loss is basically CrossEntropyLoss with vector similarity and temperature.
+
+    check_and_prepare_parameters(model, args.training_focus)
+
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
     args.old_lr = None
 
     best_acc = 0
     global iteration
     iteration = 0
 
-    ### restart training ###
-    if args.resume:
-        if os.path.isfile(args.resume):
-            args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
-            print("=> loading resumed checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            iteration = checkpoint['iteration']
-            best_acc = checkpoint['best_acc']
-            # I assume this copies the *cpu located* parameters to the CUDA model automatically?
-            model.load_state_dict(checkpoint['state_dict'])
-            if not args.reset_lr:  # if didn't reset lr, load old optimizer
-                optimizer.load_state_dict(checkpoint['optimizer'])
-            else:
-                print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
-            print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print("[Warning] no checkpoint found at '{}'".format(args.resume))
-
-    if args.pretrain:
-        if os.path.isfile(args.pretrain):
-            print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
-            checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
-            model = neq_load_customized(model, checkpoint['state_dict'])
-            print("=> loaded pretrained checkpoint '{}' (epoch {})"
-                  .format(args.pretrain, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.pretrain))
-
-
+    if args.resume:  # Resume a training which was interrupted.
+        model, optimizer, start_epoch, iteration, best_acc, lr = prepare_on_resume(model,
+                                                                             optimizer,
+                                                                             None if args.reset_lr else args.lr,
+                                                                             args.resume)
+    elif args.pretrain:  # Load a pretrained model
+        # The difference to resuming: We do not expect the same model.
+        # In this case, only some of the pretrained weights are used.
+        model = prepare_on_pretrain(model, args.pretrain)
+    else:
+        pass  # Normal case, no resuming, not pretraining.
 
     ### load data ###
     if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
@@ -292,8 +355,8 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
-        input_seq = input_seq.to(cuda)
-        sk_seq = sk_seq.to(cuda)
+        input_seq = input_seq.to(cuda_device)
+        sk_seq = sk_seq.to(cuda_device)
 
         stop_time = time.perf_counter()
 
@@ -370,7 +433,7 @@ def validate(data_loader, model, epoch, val_len):
         for idx, out in tqdm(enumerate(data_loader), total=val_len):
             input_seq, sk_seq = out
 
-            input_seq = input_seq.to(cuda)
+            input_seq = input_seq.to(cuda_device)
             B = input_seq.size(0)
 
             score, targets = model(input_seq, sk_seq)
@@ -452,7 +515,7 @@ def get_data(transform, mode='train', augmentation_settings=None):
             num_workers_dali=args.dali_workers,
             dali_prefetch_queue_depth=args.dali_prefetch_queue,
             dali_devices=[args.gpu[-1]],
-            aug_settings = augmentation_settings
+            aug_settings=augmentation_settings
             )
 
         return data_loader, len(data_loader)
