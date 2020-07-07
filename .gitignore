@@ -25,3 +25,5 @@ process_data/data/
 .idea
 eval/log_*
 *_log_*
+dpc/training_logs
+eval/transfer_logs

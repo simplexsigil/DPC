@@ -1,30 +1,32 @@
-import torch
-import numpy as np
-import pickle
 import os
 from datetime import datetime
-import glob
-import re
+
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
 plt.switch_backend('agg')
 from collections import deque
-from tqdm import tqdm 
 from torchvision import transforms
 import math
 
-def save_checkpoint(state, is_best=0, gap=1, filename='models/checkpoint.pth.tar', keep_all=False):
-    torch.save(state, filename)
-    last_epoch_path = os.path.join(os.path.dirname(filename),
-                                   'epoch%s.pth.tar' % str(state['epoch']-gap))
-    if not keep_all:
-        try: os.remove(last_epoch_path)
-        except: pass
+
+def save_checkpoint(state, is_best=0, model_path='models/checkpoint.pth.tar'):
+    model_last = os.path.join(model_path, 'model_last.pth.tar')
+
+    torch.save(state, model_last + ".tmp")  # This way there is always a valid file.
+    torch.save(state, model_last)
+
+    os.remove(model_last + ".tmp")
+
     if is_best:
-        past_best = glob.glob(os.path.join(os.path.dirname(filename), 'model_best_*.pth.tar'))
-        for i in past_best:
-            try: os.remove(i)
-            except: pass
-        torch.save(state, os.path.join(os.path.dirname(filename), 'model_best_epoch%s.pth.tar' % str(state['epoch'])))
+        model_best = os.path.join(model_path, 'model_best.pth.tar')
+
+        torch.save(state, model_best + ".tmp")  # This way there is always a valid file.
+        torch.save(state, model_best)
+
+        os.remove(model_best + ".tmp")
+
 
 def write_log(content, epoch, filename):
     if not os.path.exists(filename):
@@ -35,6 +37,7 @@ def write_log(content, epoch, filename):
     log_file.write('time: %s\n' % str(datetime.now()))
     log_file.write(content + '\n\n')
     log_file.close()
+
 
 def calc_topk_accuracy(output, target, topk=(1,)):
     '''
@@ -55,11 +58,13 @@ def calc_topk_accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1 / batch_size))
     return res
 
+
 def calc_accuracy(output, target):
     '''output: (B, N); target: (B)'''
     target = target.squeeze()
     _, pred = torch.max(output, 1)
     return torch.mean((pred == target).float())
+
 
 def calc_accuracy_binary(output, target):
     '''output, target: (B, N), output is logits, before sigmoid '''
@@ -68,15 +73,17 @@ def calc_accuracy_binary(output, target):
     del pred, output, target
     return acc
 
+
 def denorm(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
-    assert len(mean)==len(std)==3
-    inv_mean = [-mean[i]/std[i] for i in range(3)]
-    inv_std = [1/i for i in std]
+    assert len(mean) == len(std) == 3
+    inv_mean = [-mean[i] / std[i] for i in range(3)]
+    inv_std = [1 / i for i in std]
     return transforms.Normalize(mean=inv_mean, std=inv_std)
 
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -88,8 +95,8 @@ class AverageMeter(object):
         self.local_history = deque([])
         self.local_avg = 0
         self.history = []
-        self.dict = {} # save all data values here
-        self.save_dict = {} # save mean and std here, for summary table
+        self.dict = {}  # save all data values here
+        self.save_dict = {}  # save mean and std here, for summary table
 
     def update(self, val, n=1, history=0, step=5):
         self.val = val
@@ -116,6 +123,7 @@ class AverageMeter(object):
 
 class AccuracyTable(object):
     '''compute accuracy for each class'''
+
     def __init__(self):
         self.dict = {}
 
@@ -126,7 +134,7 @@ class AccuracyTable(object):
             i = int(i)
             j = int(j)
             if j not in self.dict.keys():
-                self.dict[j] = {'count':0,'correct':0}
+                self.dict[j] = {'count': 0, 'correct': 0}
             self.dict[j]['count'] += 1
             if i == j:
                 self.dict[j]['correct'] += 1
@@ -135,11 +143,12 @@ class AccuracyTable(object):
         for key in self.dict.keys():
             acc = self.dict[key]['correct'] / self.dict[key]['count']
             print('%s: %2d, accuracy: %3d/%3d = %0.6f' \
-                % (label, key, self.dict[key]['correct'], self.dict[key]['count'], acc))
+                  % (label, key, self.dict[key]['correct'], self.dict[key]['count'], acc))
 
 
 class ConfusionMeter(object):
     '''compute and show confusion matrix'''
+
     def __init__(self, num_class):
         self.num_class = num_class
         self.mat = np.zeros((num_class, num_class))
@@ -150,7 +159,7 @@ class ConfusionMeter(object):
         pred, tar = pred.cpu().numpy(), tar.cpu().numpy()
         pred = np.squeeze(pred)
         tar = np.squeeze(tar)
-        for p,t in zip(pred.flat, tar.flat):
+        for p, t in zip(pred.flat, tar.flat):
             self.mat[p][t] += 1
 
     def print_mat(self):
@@ -160,23 +169,23 @@ class ConfusionMeter(object):
     def plot_mat(self, path, dictionary=None, annotate=False):
         plt.figure(dpi=600)
         plt.imshow(self.mat,
-            cmap=plt.cm.jet,
-            interpolation=None,
-            extent=(0.5, np.shape(self.mat)[0]+0.5, np.shape(self.mat)[1]+0.5, 0.5))
+                   cmap=plt.cm.jet,
+                   interpolation=None,
+                   extent=(0.5, np.shape(self.mat)[0] + 0.5, np.shape(self.mat)[1] + 0.5, 0.5))
         width, height = self.mat.shape
         if annotate:
             for x in range(width):
                 for y in range(height):
-                    plt.annotate(str(int(self.mat[x][y])), xy=(y+1, x+1),
+                    plt.annotate(str(int(self.mat[x][y])), xy=(y + 1, x + 1),
                                  horizontalalignment='center',
                                  verticalalignment='center',
                                  fontsize=8)
 
         if dictionary is not None:
-            plt.xticks([i+1 for i in range(width)],
+            plt.xticks([i + 1 for i in range(width)],
                        [dictionary[i] for i in range(width)],
                        rotation='vertical')
-            plt.yticks([i+1 for i in range(height)],
+            plt.yticks([i + 1 for i in range(height)],
                        [dictionary[i] for i in range(height)])
         plt.xlabel('Ground Truth')
         plt.ylabel('Prediction')
@@ -221,4 +230,3 @@ def random_image_crop_square(min_area_n=0.4, max_area_n=1, image_width=150, imag
     crop_length_y = crop_length
 
     return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
-

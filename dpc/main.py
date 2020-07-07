@@ -32,6 +32,12 @@ torch.backends.cudnn.benchmark = True
 global start_time
 global stop_time
 global cuda_device
+global criterion
+global iteration
+global de_normalize
+global img_path
+global writer_train
+global args
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
@@ -55,7 +61,7 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
-parser.add_argument('--prefix', default='skelcont', type=str, help='prefix of checkpoint filename')
+parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
 parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
@@ -90,176 +96,73 @@ def argument_checks(args):
     assert args.loader_workers >= 0
     assert args.dali_workers >= 1, "Minimum 1"
 
+    if not args.use_dali:  # For a cleaner printout of settings.
+        args.dali_prefetch_queue = None
+        args.dali_workers = None
 
-def check_and_prepare_cuda(device_ids):
-    # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in device_ids])
-
-    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
-    print('Available device count: {}'.format(torch.cuda.device_count()))
-
-    device_ids = list(range(torch.cuda.device_count()))  # The device ids restart from 0 on the visible devices.
-
-    print("Note: Device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
-
-    for i in device_ids:
-        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
-
-    print("Cuda is available: {}".format(torch.cuda.is_available()))
-
-    global cuda_device
-    cuda_device = torch.device('cuda')
-
-    return cuda_device, device_ids
-
-
-def select_and_prepare_model(model_name):
-    if model_name == 'skelcont':
-        model = SkeleContrast(img_dim=args.img_dim,
-                              seq_len=args.seq_len,
-                              network=args.rgb_net,
-                              representation_size=args.representation_size,
-                              score_function=args.score_function)
-    else:
-        raise ValueError('wrong model!')
-
-    return model
-
-
-def check_and_prepare_parameters(model, training_focus):
-    if training_focus == 'except_resnet':
-        for name, param in model.module.resnet.named_parameters():
-            param.requires_grad = False
-
-    elif training_focus == 'all':
-        pass
-    else:
-        raise ValueError
-
-    print('\n===========Check Grad============')
-    for name, param in model.named_parameters():
-        print(name, param.requires_grad)
-    print('=================================\n')
-
-
-def prepare_on_resume(model, optimizer, lr, resume_file):
-    if not os.path.isfile(resume_file):
-        print("####\n[Warning] no checkpoint found at '{}'\n####".format(args.resume))
-        raise FileNotFoundError
-    else:
-        old_lr = float(re.search('_lr(.+?)_', resume_file).group(1))
-
-        print("=> loading resumed checkpoint '{}'".format(resume_file))
-
-        checkpoint = torch.load(resume_file, map_location=torch.device('cpu'))
-
-        epoch = checkpoint['epoch']
-        iteration = checkpoint['iteration']
-        best_acc = checkpoint['best_acc']
-
-        # I assume this copies the CPU located parameters automatically to cuda.
-        model.load_state_dict(checkpoint['state_dict'])
-
-        if not lr:  # If not explicitly reset, load old optimizer.
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            lr = old_lr
-        else:
-            print('==== Resuming with lr {:.1e} (Last lr: {:.1e}) ===='.format(lr, old_lr))
-
-        print("=> loaded resumed checkpoint (epoch {}, lr {}) '{}' ".format(epoch, lr, resume_file))
-
-        return model, optimizer, epoch, iteration, best_acc, lr
-
-
-def prepare_on_pretrain(model, pretrain_file):
-    if not os.path.isfile(pretrain_file):
-        print("=> no checkpoint found at '{}'".format(args.pretrain))
-        raise FileNotFoundError
-    else:
-        print("=> loading pretrained checkpoint '{}'".format(pretrain_file))
-
-        checkpoint = torch.load(pretrain_file, map_location=torch.device('cpu'))
-        model = neq_load_customized(model, checkpoint['state_dict'])
-
-        print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
-
-        return model
-
-
-def prepare_augmentations(augmentation_settings, args):
-    ### load data ###
-    if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
-        transform = transforms.Compose([
-            RandomHorizontalFlip(consistent=True),
-            RandomCrop(size=224, consistent=True),
-            Scale(size=(args.img_dim, args.img_dim)),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-            ToTensor(),
-            Normalize()
-            ])
-    elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
-        transform = transforms.Compose([
-            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-            RandomHorizontalFlip(consistent=True),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-            ToTensor(),
-            Normalize()
-            ])
-    elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
-        transform = transforms.Compose([
-            RandomRotation(degree=augmentation_settings["rot_range"]),
-            RandomSizedCrop(size=args.img_dim, consistent=True),
-            ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
-                        saturation=augmentation_settings["sat_range"],
-                        hue=[val / 360. for val in augmentation_settings["hue_range"]]),
-            ToTensor(),
-            Normalize()
-            ])
-    else:
-        raise NotImplementedError
-
-    return transform
+    return args
 
 
 def main():
+    # Todo: Get rid of all these global variables.
+    global args
+    global cuda_device
+    global criterion
+    global iteration
+    global de_normalize
+    global img_path
+    global writer_train
+
+    # TODO: Set with arguments.
+    augmentation_settings = {
+        "rot_range":      (-30., 30.),
+        "hue_range":      (-180, 180),
+        "sat_range":      (0., 1.3),
+        "val_range":      (0.5, 1.5),
+        "hue_prob":       1.,
+        "crop_arr_range": (0.15, 1.)
+        }
+
+    best_acc = 0
+    iteration = 0
+
     torch.manual_seed(0)
     np.random.seed(0)
 
-    global args
     args = parser.parse_args()
 
-    argument_checks(args)
+    args = argument_checks(args)
 
-    global cuda_device  # Todo: Get rid of all these global variables.
+    # setup tools
+    de_normalize = denorm()
+    img_path, model_path, exp_path = set_path(args)
+
+    # Setup cuda
     cuda_device, device_ids = check_and_prepare_cuda(args.gpu)
 
+    # Prepare model
     model = select_and_prepare_model(args.model)
 
-    # Data Parallel uses a master device (default gpu 0) and performs scatter gather operations on batches and resulting gradients.
+    # Data Parallel uses a master device (default gpu 0)
+    # and performs scatter gather operations on batches and resulting gradients.
     # Distributes batches on mutiple devices to train model in parallel automatically.
     # If we use dali, the last device is used for data-loading only.
     model = nn.DataParallel(model, device_ids=args.gpu if len(args.gpu) < 2 or not args.use_dali else args.gpu[0:-1])
     model = model.to(cuda_device)  # Sends model to device 0, other gpus are used automatically.
 
-    global criterion
-    criterion = nn.CrossEntropyLoss()  # Contrastive loss is basically CrossEntropyLoss with vector similarity and temperature.
-
     check_and_prepare_parameters(model, args.training_focus)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
-    best_acc = 0
-    global iteration
-    iteration = 0
+    # Prepare Loss
+    # Contrastive loss can be implemented with CrossEntropyLoss with vector similarity.
+    criterion = nn.CrossEntropyLoss()  # Be aware that this includes a final Softmax.
 
+    # Handle resuming and pretrained network.
     if args.resume:  # Resume a training which was interrupted.
-        model, optimizer, start_epoch, iteration, best_acc, lr = prepare_on_resume(model,
-                                                                             optimizer,
-                                                                             None if args.reset_lr else args.lr,
-                                                                             args.resume)
+        model, optimizer, start_epoch, iteration, best_acc, lr = prepare_on_resume(model, optimizer,
+                                                                                   None if args.reset_lr else args.lr,
+                                                                                   args.resume)
         args.lr = lr
 
     elif args.pretrain:  # Load a pretrained model
@@ -269,45 +172,20 @@ def main():
     else:
         pass  # Normal case, no resuming, not pretraining.
 
-    augmentation_settings = {
-        "rot_range":      (-30., 30.),
-        "hue_range":      (-180, 180),
-        "sat_range":      (0., 1.3),
-        "val_range":      (0.5, 1.5),
-        "hue_prob":       0.5,
-        "crop_arr_range": (0.15, 1.)
-        }
-
     transform = prepare_augmentations(augmentation_settings, args)
+
+    writer_train, writer_val = get_summary_writers(args)
+
+    write_settings_file(args, exp_path)
 
     train_loader, train_len = get_data(transform, 'train', augmentation_settings, use_dali=args.use_dali)
     val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
 
-    # setup tools
-    global de_normalize
-    de_normalize = denorm()
-
-    global img_path
-    img_path, model_path = set_path(args)
-
-    global writer_train
-    time_str = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-    tboard_str = '{time}-{mode}-m={args.model}-bs={args.batch_size}-sl={args.seq_len}-img={args.img_dim}-' \
-                 'ds={args.ds}-rgb_net={args.rgb_net}-rs={args.representation_size}'
-    val_name = tboard_str.format(args=args, mode="val", time=time_str)
-    train_name = tboard_str.format(args=args, mode="train", time=time_str)
-
-    try:  # old version
-        writer_val = SummaryWriter(log_dir=os.path.join(img_path, val_name))
-        writer_train = SummaryWriter(log_dir=os.path.join(img_path, train_name))
-    except:  # v1.7
-        writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
-        writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
-
     training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc)
 
 
-def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc=0.0):
+def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc=0.0,
+                  best_epoch=0):
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
         train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch)
@@ -331,6 +209,9 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
 
         # save check_point
         is_best = val_acc > best_acc
+        if is_best:
+            best_epoch = epoch
+
         best_acc = max(val_acc, best_acc)
         save_checkpoint({'epoch':      epoch + 1,
                          'net':        args.rgb_net,
@@ -338,7 +219,13 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
                          'best_acc':   best_acc,
                          'optimizer':  optimizer.state_dict(),
                          'iteration':  iteration},
-                        is_best, filename=os.path.join(model_path, 'epoch%s.pth.tar' % str(epoch + 1)), keep_all=False)
+                        is_best,
+                        model_path=model_path)
+
+        with open(os.path.join(model_path, "training_state.log"), 'a') as f:
+            f.write(
+                "Epoch: {:4} | Acc Train: {:1.4f} | Acc Val: {:1.4f} | Best Acc Val: {:1.4f} | "
+                "Best Epoch: {:4}\n".format(epoch + 1, train_acc, val_acc, best_acc, best_epoch + 1))
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -472,6 +359,137 @@ def validate(data_loader, model, epoch):
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
+def check_and_prepare_cuda(device_ids):
+    # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in device_ids])
+
+    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
+    print('Available device count: {}'.format(torch.cuda.device_count()))
+
+    device_ids = list(range(torch.cuda.device_count()))  # The device ids restart from 0 on the visible devices.
+
+    print("Note: Device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
+
+    for i in device_ids:
+        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
+
+    print("Cuda is available: {}".format(torch.cuda.is_available()))
+
+    cudev = torch.device('cuda')
+
+    return cudev, device_ids
+
+
+def select_and_prepare_model(model_name):
+    if model_name == 'skelcont':
+        model = SkeleContrast(img_dim=args.img_dim,
+                              seq_len=args.seq_len,
+                              network=args.rgb_net,
+                              representation_size=args.representation_size,
+                              score_function=args.score_function)
+    else:
+        raise ValueError('wrong model!')
+
+    return model
+
+
+def check_and_prepare_parameters(model, training_focus):
+    if training_focus == 'except_resnet':
+        for name, param in model.module.resnet.named_parameters():
+            param.requires_grad = False
+
+    elif training_focus == 'all':
+        pass
+    else:
+        raise ValueError
+
+    print('\n===========Check Grad============')
+    for name, param in model.named_parameters():
+        print(name, param.requires_grad)
+    print('=================================\n')
+
+
+def prepare_on_resume(model, optimizer, lr, resume_file):
+    if not os.path.isfile(resume_file):
+        print("####\n[Warning] no checkpoint found at '{}'\n####".format(args.resume))
+        raise FileNotFoundError
+    else:
+        old_lr = float(re.search('_lr(.+?)_', resume_file).group(1))
+
+        print("=> loading resumed checkpoint '{}'".format(resume_file))
+
+        checkpoint = torch.load(resume_file, map_location=torch.device('cpu'))
+
+        epoch = checkpoint['epoch']
+        iteration = checkpoint['iteration']
+        best_acc = checkpoint['best_acc']
+
+        # I assume this copies the CPU located parameters automatically to cuda.
+        model.load_state_dict(checkpoint['state_dict'])
+
+        if not lr:  # If not explicitly reset, load old optimizer.
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr = old_lr
+        else:
+            print('==== Resuming with lr {:.1e} (Last lr: {:.1e}) ===='.format(lr, old_lr))
+
+        print("=> loaded resumed checkpoint (epoch {}, lr {}) '{}' ".format(epoch, lr, resume_file))
+
+        return model, optimizer, epoch, iteration, best_acc, lr
+
+
+def prepare_on_pretrain(model, pretrain_file):
+    if not os.path.isfile(pretrain_file):
+        print("=> no checkpoint found at '{}'".format(args.pretrain))
+        raise FileNotFoundError
+    else:
+        print("=> loading pretrained checkpoint '{}'".format(pretrain_file))
+
+        checkpoint = torch.load(pretrain_file, map_location=torch.device('cpu'))
+        model = neq_load_customized(model, checkpoint['state_dict'])
+
+        print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
+
+        return model
+
+
+def prepare_augmentations(augmentation_settings, args):
+    if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
+        transform = transforms.Compose([
+            RandomHorizontalFlip(consistent=True),
+            RandomCrop(size=224, consistent=True),
+            Scale(size=(args.img_dim, args.img_dim)),
+            RandomGray(consistent=False, p=0.5),
+            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
+            ToTensor(),
+            Normalize()
+            ])
+    elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
+        transform = transforms.Compose([
+            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
+            RandomHorizontalFlip(consistent=True),
+            RandomGray(consistent=False, p=0.5),
+            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
+            ToTensor(),
+            Normalize()
+            ])
+    elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
+        transform = transforms.Compose([
+            RandomRotation(degree=augmentation_settings["rot_range"]),
+            RandomSizedCrop(size=args.img_dim, consistent=True),
+            ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
+                        saturation=augmentation_settings["sat_range"],
+                        hue=[val / 360. for val in augmentation_settings["hue_range"]]),
+            ToTensor(),
+            Normalize()
+            ])
+    else:
+        raise NotImplementedError
+
+    return transform
+
+
 def get_data(transform, mode='train', augmentation_settings=None, use_dali=False):
     if not use_dali:
         if args.dataset == 'k400':
@@ -535,20 +553,53 @@ def get_data(transform, mode='train', augmentation_settings=None, use_dali=False
         return data_loader, len(data_loader)
 
 
-def set_path(args):
+def set_path(args, mode="training"):
     if args.resume:
         exp_path = os.path.dirname(os.path.dirname(args.resume))
     else:
-        exp_path = '{time}_training_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
-bs{args.batch_size}_len{args.seq_len}_ds{args.ds}_\
-train-{args.training_focus}'.format(
-            'r%s' % args.rgb_net[6::],
-            args=args, time=datetime.now().strftime("%Y%m%d%H%M%S"))
+        tm = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        exp_path = 'training_logs/{time}_{mode}_{args.prefix}'.format(time=tm, mode=mode, args=args)
+
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
     if not os.path.exists(img_path): os.makedirs(img_path)
     if not os.path.exists(model_path): os.makedirs(model_path)
-    return img_path, model_path
+
+    return img_path, model_path, exp_path
+
+
+def get_summary_writers(args):
+    time_str = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+    tboard_str = '{time}-{mode}-{args.prefix}-m={args.model}-bs={args.batch_size}-sl={args.seq_len}-img={args.img_dim}-' \
+                 'ds={args.ds}-rgb_net={args.rgb_net}-rs={args.representation_size}'
+    val_name = tboard_str.format(args=args, mode="val", time=time_str)
+    train_name = tboard_str.format(args=args, mode="train", time=time_str)
+
+    try:  # old version
+        writer_val = SummaryWriter(log_dir=os.path.join(img_path, val_name))
+        writer_train = SummaryWriter(log_dir=os.path.join(img_path, train_name))
+    except:  # v1.7
+        writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
+        writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
+
+    return writer_train, writer_val
+
+
+def write_settings_file(args, exp_path):
+    args_d = vars(args)
+    training_description = ["{}: {}".format(key, args_d[key]) for key in sorted(args_d.keys()) if
+                            args_d[key] is not None]
+    training_description = "\n".join(training_description)
+
+    with open(os.path.join(exp_path, "training_description.txt"), 'w') as f:
+        import subprocess
+        label = subprocess.check_output(["git", "describe", "--always"]).decode("utf-8").strip()
+
+        f.write("Git describe of repo: {}".format(label))
+
+        f.write("\n\n")
+
+        f.write(training_description)
 
 
 if __name__ == '__main__':
