@@ -49,8 +49,8 @@ parser.add_argument('--temperature', default=0.01, type=float, help='Termperatur
 parser.add_argument('--batch_size', default=14, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
-parser.add_argument('--resume', default='', type=str, help='path of model to resume')
-parser.add_argument('--pretrain', default='', type=str, help='path of pretrained model')
+parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
+parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
@@ -83,7 +83,7 @@ def argument_checks(args):
     This function performs non-obvious checks on the arguments provided. Most of these problems would also become
     apparent when starting training, but depending on the dataset size, this might take some time. Fail fast.
     """
-    assert not args.resume and args.pretrain, "Use of pretrained model and resuming training makes no sense."
+    assert not (args.resume and args.pretrain), "Use of pretrained model and resuming training makes no sense."
     calc_gpus = len(args.gpu)
     calc_gpus = max(1, calc_gpus - 1) if args.use_dali else calc_gpus  # One GPU only used for DALI
     assert args.batch_size % calc_gpus == 0, "Batch size has to be divisible by GPU count. DALI reduces GPUs by one."
@@ -187,6 +187,43 @@ def prepare_on_pretrain(model, pretrain_file):
         return model
 
 
+def prepare_augmentations(augmentation_settings, args):
+    ### load data ###
+    if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
+        transform = transforms.Compose([
+            RandomHorizontalFlip(consistent=True),
+            RandomCrop(size=224, consistent=True),
+            Scale(size=(args.img_dim, args.img_dim)),
+            RandomGray(consistent=False, p=0.5),
+            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
+            ToTensor(),
+            Normalize()
+            ])
+    elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
+        transform = transforms.Compose([
+            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
+            RandomHorizontalFlip(consistent=True),
+            RandomGray(consistent=False, p=0.5),
+            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
+            ToTensor(),
+            Normalize()
+            ])
+    elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
+        transform = transforms.Compose([
+            RandomRotation(degree=augmentation_settings["rot_range"]),
+            RandomSizedCrop(size=args.img_dim, consistent=True),
+            ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
+                        saturation=augmentation_settings["sat_range"],
+                        hue=[val / 360. for val in augmentation_settings["hue_range"]]),
+            ToTensor(),
+            Normalize()
+            ])
+    else:
+        raise NotImplementedError
+
+    return transform
+
+
 def main():
     torch.manual_seed(0)
     np.random.seed(0)
@@ -213,7 +250,6 @@ def main():
     check_and_prepare_parameters(model, args.training_focus)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    args.old_lr = None
 
     best_acc = 0
     global iteration
@@ -224,6 +260,8 @@ def main():
                                                                              optimizer,
                                                                              None if args.reset_lr else args.lr,
                                                                              args.resume)
+        args.lr = lr
+
     elif args.pretrain:  # Load a pretrained model
         # The difference to resuming: We do not expect the same model.
         # In this case, only some of the pretrained weights are used.
@@ -231,49 +269,19 @@ def main():
     else:
         pass  # Normal case, no resuming, not pretraining.
 
-    ### load data ###
-    if args.dataset == 'ucf101':  # designed for ucf101, short size=256, rand crop to 224x224 then scale to 128x128
-        transform = transforms.Compose([
-            RandomHorizontalFlip(consistent=True),
-            RandomCrop(size=224, consistent=True),
-            Scale(size=(args.img_dim, args.img_dim)),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-            ToTensor(),
-            Normalize()
-            ])
-    elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
-        transform = transforms.Compose([
-            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-            RandomHorizontalFlip(consistent=True),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-            ToTensor(),
-            Normalize()
-            ])
-    elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
+    augmentation_settings = {
+        "rot_range":      (-30., 30.),
+        "hue_range":      (-180, 180),
+        "sat_range":      (0., 1.3),
+        "val_range":      (0.5, 1.5),
+        "hue_prob":       0.5,
+        "crop_arr_range": (0.15, 1.)
+        }
 
-        augmentation_settings = {
-            "rot_range":      (-30., 30.),
-            "hue_range":      (-180, 180),
-            "sat_range":      (0., 1.3),
-            "val_range":      (0.5, 1.5),
-            "hue_prob":       0.5,
-            "crop_arr_range": (0.15, 1.)
-            }
+    transform = prepare_augmentations(augmentation_settings, args)
 
-        transform = transforms.Compose([
-            RandomRotation(degree=augmentation_settings["rot_range"]),
-            RandomSizedCrop(size=args.img_dim, consistent=True),
-            ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
-                        saturation=augmentation_settings["sat_range"],
-                        hue=[val / 360. for val in augmentation_settings["hue_range"]]),
-            ToTensor(),
-            Normalize()
-            ])
-
-    train_loader, train_len = get_data(transform, 'train', augmentation_settings)
-    val_loader, val_len = get_data(transform, 'val', augmentation_settings)
+    train_loader, train_len = get_data(transform, 'train', augmentation_settings, use_dali=args.use_dali)
+    val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
 
     # setup tools
     global de_normalize
@@ -296,11 +304,14 @@ def main():
         writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
         writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
 
+    training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc)
+
+
+def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc=0.0):
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
-                                                                                  train_len)
-        val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch, val_len)
+        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch)
+        val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
         if args.use_dali:
             train_loader.reset()
@@ -332,7 +343,7 @@ def main():
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len):
+def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
     data_loading_times = []
     cuda_transfer_times = []
     calculation_times = []
@@ -406,7 +417,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Loss {loss.val:.6f} ({loss.local_avg:.4f})\t'
                   'Acc: top1 {3:.4f}; top3 {4:.4f}; top5 {5:.4f} T:{6:.2f}\t'.format(
-                epoch, idx, epoch_len, top1, top3, top5, time.time() - tic, loss=losses))
+                epoch, idx, len(data_loader), top1, top3, top5, time.time() - tic, loss=losses))
 
             writer_train.add_scalar('local/loss', losses.val, iteration)
             writer_train.add_scalar('local/accuracy', accuracy.val, iteration)
@@ -423,14 +434,14 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, epoch_len
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
-def validate(data_loader, model, epoch, val_len):
+def validate(data_loader, model, epoch):
     losses = AverageMeter()
     accuracy = AverageMeter()
     accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
     model.eval()
 
     with torch.no_grad():
-        for idx, out in tqdm(enumerate(data_loader), total=val_len):
+        for idx, out in tqdm(enumerate(data_loader)):
             input_seq, sk_seq = out
 
             input_seq = input_seq.to(cuda_device)
@@ -461,8 +472,8 @@ def validate(data_loader, model, epoch, val_len):
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
-def get_data(transform, mode='train', augmentation_settings=None):
-    if not args.use_dali:
+def get_data(transform, mode='train', augmentation_settings=None, use_dali=False):
+    if not use_dali:
         if args.dataset == 'k400':
             use_big_K400 = args.img_dim > 140
             dataset = Kinetics400_full_3d(mode=mode,
@@ -502,6 +513,9 @@ def get_data(transform, mode='train', augmentation_settings=None):
         return data_loader, len(data_loader)
 
     else:
+        if not args.dataset == 'nturgbd':
+            raise NotImplementedError
+
         data_loader = NTURGBD3DDali(
             batch_size=args.batch_size,
             split=mode,
@@ -527,7 +541,7 @@ def set_path(args):
     else:
         exp_path = '{time}_training_{args.prefix}/{args.dataset}-{args.img_dim}_{0}_{args.model}_\
 bs{args.batch_size}_len{args.seq_len}_ds{args.ds}_\
-train-{args.train_what}'.format(
+train-{args.training_focus}'.format(
             'r%s' % args.rgb_net[6::],
             args=args, time=datetime.now().strftime("%Y%m%d%H%M%S"))
     img_path = os.path.join(exp_path, 'img')

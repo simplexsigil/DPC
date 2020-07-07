@@ -15,21 +15,18 @@ The NTURGB3DInputIterator is an iterator which provides dataset samples.
 
 Author: David Schneider david.schneider2@student.kit.edu
 """
-
 import os
 import sys
 import time
 
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from torch.utils import data
 
 from dataset_3d import DatasetUtils
-
-sys.path.append('../utils')
-from augmentation import *
-
-import numpy as np
 from dataset_nturgbd import NTURGBDDatasetUtils
-import torch
 
 try:
     from nvidia.dali.plugin.pytorch import DALIClassificationIterator
@@ -38,7 +35,10 @@ try:
     import nvidia.dali.types as types
     import nvidia.dali.plugin.pytorch as ndpt
 except ImportError:
-    raise ImportError("Please install DALI from https://www.github.com/NVIDIA/DALI to run this example.")
+    raise ImportError("Please install DALI from https://www.github.com/NVIDIA/DALI.")
+
+sys.path.append('../utils')
+import utils as utl
 
 
 class NTURGB3DInputReader(data.Dataset):
@@ -122,7 +122,8 @@ class NTURGB3DInputReader(data.Dataset):
         if self.split == "val":
             if len(self.sample_info) > 1000:
                 print(
-                    "Limited the validation sample to 500 to speed up training. This does not alter the structure of the train/test/val splits, " +
+                    "Limited the validation sample to 500 to speed up training. "
+                    "This does not alter the structure of the train/test/val splits, " +
                     "it only reduces the samples used for validation in training among the val split.")
                 self.sample_info = self.sample_info.sample(n=1000, random_state=666)
 
@@ -159,16 +160,20 @@ class NTURGB3DInputReader(data.Dataset):
             if self.return_label:
                 label = sample["action"]
 
-                return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seq, label
+                return (img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs,
+                        seq_crop_xs, seq_crop_ys, sk_seq, label)
 
             else:
-                return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seq
+                return (img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs,
+                        seq_crop_xs, seq_crop_ys, sk_seq)
 
         if self.return_label:
             label = sample["action"]
-            return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, label
+            return (img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs,
+                    seq_crop_xs, seq_crop_ys, label)
         else:
-            return img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys
+            return (img_seq, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs,
+                    seq_crop_xs, seq_crop_ys)
 
     def random_image_transforms(self, frame_count,
                                 rotation_range=None,
@@ -203,10 +208,10 @@ class NTURGB3DInputReader(data.Dataset):
         values = np.repeat(np.random.uniform(low=value_range[0], high=value_range[1]), repeats=frame_count)
         values = values.astype(np.float32)
 
-        crop_w, crop_h, crop_x, crop_y = self.random_image_crop_square(min_area_n=min(crop_area_range),
-                                                                       max_area_n=max(crop_area_range),
-                                                                       image_min_width=self.image_min_width,
-                                                                       image_min_height=self.image_min_height)
+        crop_w, crop_h, crop_x, crop_y = utl.random_image_crop_square(min_area_n=min(crop_area_range),
+                                                                      max_area_n=max(crop_area_range),
+                                                                      image_width=self.image_min_width,
+                                                                      image_height=self.image_min_height)
 
         crop_ws = np.repeat(crop_w, repeats=frame_count)
         crop_ws = crop_ws.astype(np.float32)
@@ -218,41 +223,6 @@ class NTURGB3DInputReader(data.Dataset):
         crop_ys = crop_ys.astype(np.float32)
 
         return rotations, hues, saturations, values, crop_ws, crop_hs, crop_xs, crop_ys
-
-    def random_image_crop_square(self, min_area_n=0.4, max_area_n=1, image_min_width=None, image_min_height=None):
-        """
-        This follows the conventions of https://docs.nvidia.com/deeplearning/dali/user-guide/docs/supported_ops.html#nvidia.dali.ops.Crop
-        Especially considering the meaning of crop_pos_x_norm and crop_pos_y_norm.
-        """
-        if image_min_width is None:
-            image_min_width = self.image_min_width
-        if image_min_height is None:
-            image_min_height = self.image_min_height
-
-        image_shorter = min(image_min_height, image_min_width)
-        image_longer = max(image_min_height, image_min_width)
-
-        # First find square crop length.
-        total_area = image_min_width * image_min_height
-
-        min_crop_length = math.ceil(math.sqrt(min_area_n * total_area))
-        max_crop_length = math.floor(math.sqrt(max_area_n * total_area))
-
-        min_crop_length = min(max(min_crop_length, 1.), image_shorter)
-        max_crop_length = min(max_crop_length, image_shorter)
-
-        crop_length = np.random.uniform(min_crop_length, max_crop_length)
-
-        # Second, find upper left corner position. Normal distributed around center.
-        crop_pos_x_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.),
-                              1.)  # Normal distributed between 0 and 1.
-        crop_pos_y_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.),
-                              1.)  # Normal distributed between 0 and 1.
-
-        crop_length_x = crop_length
-        crop_length_y = crop_length
-
-        return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
 
 
 class NTURGBD3DPipeline(Pipeline):
@@ -310,6 +280,20 @@ class NTURGBD3DPipeline(Pipeline):
             self.transpose = ops.Transpose(perm=[0, 1, 2], transpose_layout=False, output_layout=output_layout,
                                            device="gpu")
 
+        self.batch_order_id = None
+        self.img_seq = None
+        self.in_angle = None
+        self.in_hue = None
+        self.in_saturation = None
+        self.in_value = None
+
+        self.in_crop_w = None
+        self.in_crop_h = None
+        self.in_crop_x = None
+        self.in_crop_y = None
+
+        self.sk_seq = None
+
     def define_graph(self):
         self.batch_order_id = self.batch_order()
 
@@ -346,8 +330,8 @@ class NTURGBD3DPipeline(Pipeline):
     def iter_setup(self):
         try:
             start_loading = time.perf_counter()
-            img_seqs, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs, seq_crop_ys, sk_seqs = next(
-                self.iterator)
+            (img_seqs, seq_rotations, seq_hues, seq_saturations, seq_values, seq_crop_ws, seq_crop_hs, seq_crop_xs,
+             seq_crop_ys, sk_seqs) = next(self.iterator)
 
             img_seqs = [img for seq in img_seqs for img in seq]
             sk_seqs = np.stack(sk_seqs, 0)
@@ -490,9 +474,11 @@ class NTURGBD3DDali:
         cuda_device = torch.cuda.current_device()
         cuda_stream = torch.cuda.current_stream()
 
+        # noinspection PyTypeChecker
         input_seq = torch.zeros(input_seq_dali.shape(), dtype=torch.float32, device=cuda_device)
         ndpt.feed_ndarray(input_seq_dali, input_seq, cuda_stream=cuda_stream)
 
+        # noinspection PyTypeChecker
         sk_seq = torch.zeros(sk_seq_dali.shape(), dtype=torch.float32, device=cuda_device)
         ndpt.feed_ndarray(sk_seq_dali, sk_seq, cuda_stream=cuda_stream)
 
@@ -540,10 +526,6 @@ class NTURGBD3DDali:
 
     def reset(self):
         self.pipeline.reset()
-
-
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 
 def show_images(image_batch, batch_size, seq_len):

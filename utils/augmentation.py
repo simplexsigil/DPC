@@ -1,14 +1,14 @@
-import random
-import numbers
-import math
 import collections
-import numpy as np
-from PIL import ImageOps, Image
-from joblib import Parallel, delayed
+import math
+import numbers
+import random
 
+import numpy as np
 import torchvision
-from torchvision import transforms
 import torchvision.transforms.functional as F
+from PIL import ImageOps, Image
+from torchvision import transforms
+
 
 class Padding:
     def __init__(self, pad):
@@ -16,6 +16,7 @@ class Padding:
 
     def __call__(self, img):
         return ImageOps.expand(img, border=self.pad, fill=0)
+
 
 class Scale:
     def __init__(self, size, interpolation=Image.NEAREST):
@@ -96,6 +97,7 @@ class RandomCropWithProb:
         else:
             return imgmap
 
+
 class RandomCrop:
     def __init__(self, size, consistent=True):
         if isinstance(size, numbers.Number):
@@ -128,10 +130,10 @@ class RandomCrop:
                 result = []
                 for idx, i in enumerate(imgmap):
                     proposal = []
-                    for j in range(3): # number of proposal: use the one with largest optical flow
+                    for j in range(3):  # number of proposal: use the one with largest optical flow
                         x = random.randint(0, w - tw)
                         y = random.randint(0, h - th)
-                        proposal.append([x, y, abs(np.mean(flowmap[idx,y:y+th,x:x+tw,:]))])
+                        proposal.append([x, y, abs(np.mean(flowmap[idx, y:y + th, x:x + tw, :]))])
                     [x1, y1, _] = max(proposal, key=lambda x: x[-1])
                     result.append(i.crop((x1, y1, x1 + tw, y1 + th)))
                 return result
@@ -142,57 +144,48 @@ class RandomCrop:
 
 
 class RandomSizedCrop:
-    def __init__(self, size, interpolation=Image.BILINEAR, consistent=True, p=1.0):
+    def __init__(self, size, crop_area=(0.5, 1), interpolation=Image.BILINEAR, consistent=True, p=1.0):
         self.size = size
         self.interpolation = interpolation
         self.consistent = consistent
-        self.threshold = p 
+        self.threshold = p
+        self.crop_area = crop_area
+
+    def random_crop_box(self, img):
+        from utils import random_image_crop_square
+        h = img.size[0]
+        w = img.size[1]
+
+        # x_c and y_c describe the crop area center as values between 0 and 1.
+        # w_c and h_c describe the crop lengths as width and height values in pixel.
+        w_c, h_c, x_c, y_c = random_image_crop_square(min_area_n=self.crop_area[0],
+                                                      max_area_n=self.crop_area[1],
+                                                      image_height=h, image_width=w)
+
+        # Upper left corner has to be calculated in pixels.
+        x_c = math.floor(max(0, x_c * w - w_c / 2))
+        y_c = math.floor(max(0, y_c * h - h_c / 2))
+
+        return int(x_c), int(y_c), int(x_c + w_c), int(y_c + h_c)
 
     def __call__(self, imgmap):
         img1 = imgmap[0]
-        if random.random() < self.threshold: # do RandomSizedCrop
-            for attempt in range(10):
-                area = img1.size[0] * img1.size[1]
-                target_area = random.uniform(0.5, 1) * area
-                aspect_ratio = random.uniform(3. / 4, 4. / 3)
+        if random.random() < self.threshold:  # do RandomSizedCrop
+            if self.consistent:
+                c_box = self.random_crop_box(img1)
 
-                w = int(round(math.sqrt(target_area * aspect_ratio)))
-                h = int(round(math.sqrt(target_area / aspect_ratio)))
+                imgmap = [i.crop(c_box) for i in imgmap]
+                for i in imgmap: assert (i.size == (c_box[2] - c_box[0], c_box[3] - c_box[1]))
+            else:
+                imgmap = [i.crop(self.random_crop_box(i)) for i in imgmap]
 
-                if self.consistent:
-                    if random.random() < 0.5:
-                        w, h = h, w
-                    if w <= img1.size[0] and h <= img1.size[1]:
-                        x1 = random.randint(0, img1.size[0] - w)
-                        y1 = random.randint(0, img1.size[1] - h)
+            imgmap = [i.resize((self.size, self.size), self.interpolation) for i in imgmap]
 
-                        imgmap = [i.crop((x1, y1, x1 + w, y1 + h)) for i in imgmap]
-                        for i in imgmap: assert(i.size == (w, h))
-
-                        return [i.resize((self.size, self.size), self.interpolation) for i in imgmap]
-                else:
-                    result = []
-                    for i in imgmap:
-                        if random.random() < 0.5:
-                            w, h = h, w
-                        if w <= img1.size[0] and h <= img1.size[1]:
-                            x1 = random.randint(0, img1.size[0] - w)
-                            y1 = random.randint(0, img1.size[1] - h)
-                            result.append(i.crop((x1, y1, x1 + w, y1 + h)))
-                            assert(result[-1].size == (w, h))
-                        else:
-                            result.append(i)
-
-                    assert len(result) == len(imgmap)
-                    return [i.resize((self.size, self.size), self.interpolation) for i in result] 
-
-            # Fallback
-            scale = Scale(self.size, interpolation=self.interpolation)
-            crop = CenterCrop(self.size)
-            return crop(scale(imgmap))
-        else: # don't do RandomSizedCrop, do CenterCrop
+        else:  # don't do RandomSizedCrop, do CenterCrop
             crop = CenterCrop(self.size)
             return crop(imgmap)
+
+        return imgmap
 
 
 class RandomHorizontalFlip:
@@ -204,6 +197,7 @@ class RandomHorizontalFlip:
             self.threshold = 1
         else:
             self.threshold = 0.5
+
     def __call__(self, imgmap):
         if self.consistent:
             if random.random() < self.threshold:
@@ -216,16 +210,18 @@ class RandomHorizontalFlip:
                 if random.random() < self.threshold:
                     result.append(i.transpose(Image.FLIP_LEFT_RIGHT))
                 else:
-                    result.append(i) 
+                    result.append(i)
             assert len(result) == len(imgmap)
-            return result 
+            return result
 
 
 class RandomGray:
     '''Actually it is a channel splitting, not strictly grayscale images'''
+
     def __init__(self, consistent=True, p=0.5):
         self.consistent = consistent
-        self.p = p # probability to apply grayscale
+        self.p = p  # probability to apply grayscale
+
     def __call__(self, imgmap):
         if self.consistent:
             if random.random() < self.p:
@@ -238,16 +234,16 @@ class RandomGray:
                 if random.random() < self.p:
                     result.append(self.grayscale(i))
                 else:
-                    result.append(i) 
+                    result.append(i)
             assert len(result) == len(imgmap)
-            return result 
+            return result
 
     def grayscale(self, img):
         channel = np.random.choice(3)
-        np_img = np.array(img)[:,:,channel]
+        np_img = np.array(img)[:, :, channel]
         np_img = np.dstack([np_img, np_img, np_img])
         img = Image.fromarray(np_img, 'RGB')
-        return img 
+        return img
 
 
 class ColorJitter(object):
@@ -266,6 +262,7 @@ class ColorJitter(object):
             hue_factor is chosen uniformly from [-hue, hue] or the given [min, max].
             Should have 0<= hue <= 0.5 or -0.5 <= min <= max <= 0.5.
     """
+
     def __init__(self, brightness=0, contrast=0, saturation=0, hue=0, consistent=False, p=1.0):
         self.brightness = self._check_input(brightness, 'brightness')
         self.contrast = self._check_input(contrast, 'contrast')
@@ -273,7 +270,7 @@ class ColorJitter(object):
         self.hue = self._check_input(hue, 'hue', center=0, bound=(-0.5, 0.5),
                                      clip_first_on_zero=False)
         self.consistent = consistent
-        self.threshold = p 
+        self.threshold = p
 
     def _check_input(self, value, name, center=1, bound=(0, float('inf')), clip_first_on_zero=True):
         if isinstance(value, numbers.Number):
@@ -326,7 +323,7 @@ class ColorJitter(object):
         return transform
 
     def __call__(self, imgmap):
-        if random.random() < self.threshold: # do ColorJitter
+        if random.random() < self.threshold:  # do ColorJitter
             if self.consistent:
                 transform = self.get_params(self.brightness, self.contrast,
                                             self.saturation, self.hue)
@@ -338,8 +335,8 @@ class ColorJitter(object):
                                                 self.saturation, self.hue)
                     result.append(transform(img))
                 return result
-        else: # don't do ColorJitter, do nothing
-            return imgmap 
+        else:  # don't do ColorJitter, do nothing
+            return imgmap
 
     def __repr__(self):
         format_string = self.__class__.__name__ + '('
@@ -356,27 +353,30 @@ class RandomRotation:
         self.degree_high = degree if isinstance(degree, numbers.Number) else degree[1]
         self.degree_low = -degree if isinstance(degree, numbers.Number) else degree[0]
         self.threshold = p
+
     def __call__(self, imgmap):
-        if random.random() < self.threshold: # do RandomRotation
+        if random.random() < self.threshold:  # do RandomRotation
             if self.consistent:
                 deg = np.random.randint(self.degree_low, self.degree_high, 1)[0]
                 return [i.rotate(deg, expand=True) for i in imgmap]
             else:
-                return [i.rotate(np.random.randint(self.degree_low, self.degree_high, 1)[0], expand=True) for i in imgmap]
-        else: # don't do RandomRotation, do nothing
-            return imgmap 
+                return [i.rotate(np.random.randint(self.degree_low, self.degree_high, 1)[0], expand=True) for i in
+                        imgmap]
+        else:  # don't do RandomRotation, do nothing
+            return imgmap
+
 
 class ToTensor:
     def __call__(self, imgmap):
         totensor = transforms.ToTensor()
         return [totensor(i) for i in imgmap]
 
+
 class Normalize:
     def __init__(self, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
         self.mean = mean
         self.std = std
+
     def __call__(self, imgmap):
         normalize = transforms.Normalize(mean=self.mean, std=self.std)
         return [normalize(i) for i in imgmap]
-
-

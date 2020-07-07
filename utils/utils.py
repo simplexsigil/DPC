@@ -10,6 +10,7 @@ plt.switch_backend('agg')
 from collections import deque
 from tqdm import tqdm 
 from torchvision import transforms
+import math
 
 def save_checkpoint(state, is_best=0, gap=1, filename='models/checkpoint.pth.tar', keep_all=False):
     torch.save(state, filename)
@@ -193,5 +194,31 @@ class ConfusionMeter(object):
         # print('Average Recall: %0.4f' % np.mean(self.recall))
 
 
+def random_image_crop_square(min_area_n=0.4, max_area_n=1, image_width=150, image_height=150):
+    """
+    This follows the conventions of https://docs.nvidia.com/deeplearning/dali/user-guide/docs/supported_ops.html#nvidia.dali.ops.Crop
+    Especially considering the meaning of crop_pos_x_norm and crop_pos_y_norm.
+    """
+    image_shorter = min(image_height, image_width)
+    image_longer = max(image_height, image_width)
 
+    # First find square crop length.
+    total_area = image_width * image_height
+
+    min_crop_length = math.ceil(math.sqrt(min_area_n * total_area))
+    max_crop_length = math.floor(math.sqrt(max_area_n * total_area))
+
+    min_crop_length = min(max(min_crop_length, 1.), image_shorter)
+    max_crop_length = min(max_crop_length, image_shorter)
+
+    crop_length = np.random.uniform(min_crop_length, max_crop_length)
+
+    # Second, find upper left corner position. Normal distributed around center.
+    crop_pos_x_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.), 1.)  # Normal distributed between 0 and 1.
+    crop_pos_y_norm = min(max(np.random.normal(loc=0.5, scale=1. / 6), 0.), 1.)  # Normal distributed between 0 and 1.
+
+    crop_length_x = crop_length
+    crop_length_y = crop_length
+
+    return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
 
