@@ -275,7 +275,7 @@ def main():
             'best_acc': best_acc,
             'optimizer': optimizer.state_dict(),
             'iteration': iteration
-        }, is_best, filename=os.path.join(model_path, 'epoch%s.pth.tar' % str(epoch + 1)), keep_all=False)
+        }, is_best, model_path=model_path)
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -286,7 +286,7 @@ def train(data_loader, model, optimizer, epoch):
     calculation_times = []
     losses = AverageMeter()
     accuracy = AverageMeter()
-    model.train_two_stream_contrastive()
+    model.train()
     global iteration
     global start_time
     global stop_time

@@ -105,14 +105,14 @@ class SkeleContrast(nn.Module):
 
         # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
         # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        score = self.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
+        score = SkeleContrast.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
 
         targets = list(range(len(score)))
 
         return score, torch.LongTensor(targets).to(block_rgb.device)
 
-    def pairwise_scores(self,
-                        x: torch.Tensor,
+    @staticmethod
+    def pairwise_scores(x: torch.Tensor,
                         y: torch.Tensor,
                         matching_fn: str,
                         temp_tao=0.1) -> torch.Tensor:
@@ -147,7 +147,7 @@ class SkeleContrast(nn.Module):
         elif matching_fn == 'dot':
             return torch.matmul(x, y.transpose(0, 1))
 
-        elif matching_fn == "nt-xent":
+        elif matching_fn == "cos-nt-xent":
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
             y_norm = y / torch.norm(y, dim=1, keepdim=True)
             xy_n = torch.matmul(x_norm, y_norm.transpose(0, 1))
@@ -155,22 +155,36 @@ class SkeleContrast(nn.Module):
 
             return xy_nt
 
-        elif matching_fn == "nt-euclidean":
+        elif matching_fn == "orth-nt-xent":
+            x_norm = x / torch.norm(x, dim=1, keepdim=True)
+            y_norm = y / torch.norm(y, dim=1, keepdim=True)
+            xy_n = torch.matmul(x_norm, y_norm.transpose(0, 1))
+            xy_nt = torch.acos(xy_n) / temp_tao
+
+            return xy_nt
+
+        elif matching_fn == "euc-nt-xent":
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
             y_norm = y / torch.norm(y, dim=1, keepdim=True)
 
-            B = x_norm.shape[0]
-            dist = torch.zeros((B, B)).to(x_norm.device)
+            x_sq = torch.sum((x_norm * x_norm), dim=1, keepdim=True)
+            y_sq = torch.sum((y_norm * y_norm), dim=1, keepdim=True)
 
-            for i in range(B):
-                y_nroll = torch.roll(y_norm, shifts=-i, dims=0)
-                pdist = torch.nn.functional.pairwise_distance(x_norm, y_nroll)
-                dist[:, i] = pdist
+            y_sq = y_sq.transpose(0, 1)
 
-            for i in range(B):
-                dist[i, :] = torch.roll(dist[i, :], shifts=i, dims=0)
+            score = torch.matmul(x_norm, y_norm.transpose(0, 1))
+            dst = torch.nn.functional.relu(x_sq - 2 * score + y_sq)
 
-            return -dist
+            '''
+            eps_t = torch.full(d.shape, 1e-12)
+            is_zero = d.abs().lt(1e-12)
+
+            dst = torch.where(is_zero, eps_t, d)
+            '''
+
+            dst = torch.sqrt(dst)
+
+            return -dst / temp_tao
 
         else:
             raise (ValueError('Unsupported similarity function'))
@@ -185,3 +199,51 @@ class SkeleContrast(nn.Module):
 
     def reset_mask(self):
         self.mask = None
+
+
+if __name__ == '__main__':
+    a = torch.randn((40, 512))
+    b = torch.randn((40, 512))
+
+    print("Checking distance for same input matrix:")
+    d = SkeleContrast.pairwise_euc_dist(a, a)
+    for i in range(len(a)):
+        for j in range(len(a)):
+            dist = torch.norm(a[i] - a[j])
+            print("d[{},{}]: {}".format(i, j, math.fabs(d[i, j] - dist)))
+
+    print("Checking distance for different input matrix:")
+    d = SkeleContrast.pairwise_euc_dist(a, b)
+
+    for i in range(len(a)):
+        for j in range(len(b)):
+            dist = torch.norm(a[i] - b[j])
+            print("d[{},{}]: {}".format(i, j, math.fabs(d[i, j] - dist)))
+
+    print("Checking distance for different input matrix:")
+    d = SkeleContrast.pairwise_euc_dist_changed(a, b)
+
+    d0 = torch.zeros(d.shape)
+
+    for i in range(len(a)):
+        for j in range(len(b)):
+            dist = torch.norm(a[i] - b[j])
+            d0[i, j] = dist
+            print("d[{},{}]: {}".format(i, j, math.fabs(d[i, j] - dist)))
+
+    import time
+
+    tic1 = time.perf_counter()
+    d1 = SkeleContrast.pairwise_euc_dist_changed(a, b)
+    tic2 = time.perf_counter()
+    d2 = -SkeleContrast.pairwise_scores(a, b, matching_fn="nt-euclidean")
+    tic3 = time.perf_counter()
+
+    print("{:.10f}".format(tic2-tic1))
+    print("{:.10f}".format(tic3-tic2))
+    print((tic3-tic2) / (tic2-tic1))
+
+    print(d1 - d0)
+
+    print(d2 - d0)
+

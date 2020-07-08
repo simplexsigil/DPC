@@ -50,7 +50,7 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--score_function', default='nt-xent', type=str)
+parser.add_argument('--score_function', default='cos-nt-xent', type=str)
 parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
 parser.add_argument('--batch_size', default=14, type=int)
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
