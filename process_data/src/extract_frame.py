@@ -41,7 +41,7 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
     command = " ".join(command)
 
     try:
-        output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+        output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         if len(output) > 0:
             print()
             print(v_path + "\n" + output.decode("utf-8", "replace"))
@@ -214,7 +214,7 @@ parser.add_argument('--dataset', default='kinetics', choices=["kinetics", "nturg
 parser.add_argument('--v_root', default='', type=str, required=True)
 parser.add_argument('--f_root', default='', type=str, required=True)
 parser.add_argument('--img_dim', default=256, type=int)
-parser.add_argument('--n_jobs', default=1, type=int)
+parser.add_argument('--n_jobs', default=32, type=int)
 parser.add_argument('--force', action='store_true', default=False, help="Overwrites existing files.")
 parser.add_argument('--open_cv', action='store_true', default=False,
                     help="Uses open cv instead of ffmpeg for extracting images.")
