@@ -21,8 +21,14 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    elif not force:
-        return
+        preexisted = False
+    else:
+        preexisted = True
+        imgs = glob.glob(os.path.join(out_dir, '*.jpg'))
+
+        if (not force) and len(imgs) > 30:
+            print("Skipping {}: preexisting with {:3} images".format(v_name, len(imgs)))
+            return
 
     ####
     # Construct command to trim the videos (ffmpeg required).

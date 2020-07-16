@@ -1,10 +1,11 @@
+import argparse
 import csv
 import glob
 import os
+
 import pandas as pd
-from tqdm import tqdm
-from sklearn.model_selection import train_test_split
 from joblib import Parallel, delayed
+from tqdm import tqdm
 
 
 def write_list(data_list, path, ):
@@ -68,7 +69,7 @@ def get_split(root, split_path, mode):
     split_list = []
     split_content = pd.read_csv(split_path).iloc[:, 0:4]
     split_list = Parallel(n_jobs=64) \
-(delayed(check_exists)(row, root) \
+        (delayed(check_exists)(row, root) \
          for i, row in tqdm(split_content.iterrows(), total=len(split_content)))
     return split_list
 
@@ -83,22 +84,31 @@ def check_exists(row, root):
         return None
 
 
-def main_Kinetics400(mode, k400_path, f_root, csv_root='../data/kinetics400'):
-    train_split_path = os.path.join(k400_path, 'kinetics_train/kinetics_train.csv')
-    val_split_path = os.path.join(k400_path, 'kinetics_val/kinetics_val.csv')
-    test_split_path = os.path.join(k400_path, 'kinetics_test/kinetics_test.csv')
+def main_Kinetics400(f_root, csv_root):
+    """
+        This function prepares two files for the dataset: The list of video files for training and the list of video files for testing.
+        Since NTURGBD does not define a fixed train test split, we just use a random 80 20 split.
+        """
     if not os.path.exists(csv_root): os.makedirs(csv_root)
-    if mode == 'train':
-        train_split = get_split(os.path.join(f_root, 'train_split'), train_split_path, 'train')
-        write_list(train_split, os.path.join(csv_root, 'train_split.csv'))
-    elif mode == 'val':
-        val_split = get_split(os.path.join(f_root, 'val_split'), val_split_path, 'val')
-        write_list(val_split, os.path.join(csv_root, 'val_split.csv'))
-    elif mode == 'test':
-        test_split = get_split(f_root, test_split_path, 'test')
-        write_list(test_split, os.path.join(csv_root, 'test_split.csv'))
-    else:
-        raise IOError('wrong mode')
+
+    # fid_p = re.compile(r"(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")  # A pattern object to recognize nturgbd file ids.
+    # action_p = re.compile(r"S\d{3}C\d{3}P\d{3}R\d{3}A(\d{3})")  # A pattern object to recognize nturgbd action ids.
+
+    fr_root, act_dirs, _ = next(os.walk(f_root))
+
+    input_set = []
+    for action_dir in tqdm(act_dirs, total=len(act_dirs)):
+        act_root, vid_dirs, _ = next(os.walk(os.path.join(fr_root, action_dir)))
+
+        for vid_dir in tqdm(vid_dirs, total=len(vid_dirs)):
+            # action_id = action_p.match(video_folder).group()  # This extracts the action id (e.g. 001) as a string
+
+            _, _, vid_frames = next(os.walk(os.path.join(act_root, vid_dir)))
+            frame_count = len(vid_frames)
+
+            input_set.append([os.path.join(act_root, vid_dir), frame_count])
+
+    write_list(input_set, os.path.join(csv_root, 'video_info.csv'))
 
 
 #  Making code comments immensely helps people to understand what this is supposed to do
@@ -126,26 +136,41 @@ def main_NTURGBD(f_root, csv_root):
     write_list(input_set, os.path.join(csv_root, 'video_info.csv'))
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', default='kinetics', choices=["kinetics", "nturgbd", "ucf101", "hmdb51"], type=str)
+parser.add_argument('--f_root', default='', type=str, required=True)
+parser.add_argument('--csv_root', default='', type=str, required=True)
+parser.add_argument('--splits_root', default='', type=str)
+
 if __name__ == '__main__':
     # f_root is the frame path
-    # edit 'your_path' here: 
+    # edit 'your_path' here:
 
-    #main_UCF101(f_root=os.path.expanduser('~/datasets/UCF101/dpc_converted/frame'),
-    #            splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
-    #            csv_root=os.path.expanduser('~/datasets/UCF101/split'))
+    args = parser.parse_args()
 
-    main_NTURGBD(f_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted/frame/rgb'),
-                 csv_root=os.path.expanduser('~/datasets/nturgbd/project_specific/dpc_converted'))
+    if args.dataset == "nturgbd":
+        main_NTURGBD(f_root=args.f_root,
+                     csv_root=args.csv_root)
 
-    # main_HMDB51(f_root=os.path.expanduser('~/datasets/HMDB51/dpc_converted/frame'),
-    #             splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
-    #             csv_root=os.path.expanduser('~/datasets/HMDB51/split'))
+    elif args.dataset == "ucf101":
+        if args.splits_root == "":
+            raise ValueError
 
-    # main_Kinetics400(mode='train', # train or val or test
-    #                  k400_path='your_path/Kinetics',
-    #                  f_root='your_path/Kinetics400/frame')
+        main_UCF101(f_root=args.f_root,
+                    csv_root=args.csv_root,
+                    splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
+                    )
+    elif args.dataset == "hmdb51":
+        if args.splits_root == "":
+            raise ValueError
 
-    # main_Kinetics400(mode='train', # train or val or test
-    #                  k400_path='your_path/Kinetics',
-    #                  f_root='your_path/Kinetics400_256/frame',
-    #                  csv_root='../data/kinetics400_256')
+        main_HMDB51(f_root=args.f_root,
+                    csv_root=args.csv_root,
+                    splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
+                    )
+    elif args.dataset == "kinetics":
+        main_Kinetics400(f_root=args.f_root,
+                         csv_root=args.csv_root,
+                         )
+    else:
+        raise ValueError
