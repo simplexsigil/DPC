@@ -12,7 +12,7 @@ from tqdm import tqdm
 plt.switch_backend('agg')
 
 
-def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
+def extract_video_ffmpeg(v_path, f_root, dim=240, force=False, log_level="error"):
     '''v_path: single video path;
         f_root: root to store frames'''
     v_class = v_path.split('/')[-2]
@@ -27,7 +27,7 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
         imgs = glob.glob(os.path.join(out_dir, '*.jpg'))
 
         if (not force) and len(imgs) > 30:
-            print("Skipping {}: preexisting with {:3} images".format(v_name, len(imgs)))
+            print("SKIPPING {}: preexisting with {:3} images".format(v_name, len(imgs)))
             return
 
     ####
@@ -40,7 +40,7 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
         'scale="if(gt(ih\,iw)\,{min_dim}\,-2)":"if(gt(ih\,iw)\,-2\,{min_dim})"'.format(min_dim=dim),
         '-r', '30',
         '-threads', '0',
-        '-loglevel', 'level+error',
+        '-loglevel', str(log_level),
         '"{out_dir}/{out_name}_%04d.jpg"'.format(out_dir=out_dir, out_name=v_name)
         ]
 
@@ -49,8 +49,10 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
     try:
         output = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         if len(output) > 0:
-            print()
-            print(v_path + "\n" + output.decode("utf-8", "replace"))
+            print("RESULT " + v_path + "\n" + output.decode("utf-8", "replace"))
+        else:
+            print("SUCCESS " + v_path)
+
 
     except subprocess.CalledProcessError as err:
         print()
@@ -64,7 +66,7 @@ def extract_video_ffmpeg(v_path, f_root, dim=240, force=False):
         print(str(err) + "\n" + output)
 
 
-def extract_video_opencv(v_path, f_root, dim=240, force=False):
+def extract_video_opencv(v_path, f_root, dim=240, force=False, log_level=None):
     '''v_path: single video path;
        f_root: root to store frames'''
     v_class = v_path.split('/')[-2]
@@ -126,7 +128,7 @@ def resize_dim(w, h, target):
         return (int(target), int(target * h / w))
 
 
-def main_UCF101(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
+def main_UCF101(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False, log_level="error"):
     print('extracting UCF101 ... ')
     print('extracting videos from %s' % v_root)
     print('frame save to %s' % f_root)
@@ -137,11 +139,12 @@ def main_UCF101(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
         v_paths = glob.glob(os.path.join(j, '*.avi'))
         v_paths = sorted(v_paths)
         Parallel(n_jobs=n_jobs)(
-            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim) for p in
+            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim,
+                                                                               log_level=log_level) for p in
             tqdm(v_paths, total=len(v_paths)))
 
 
-def main_HMDB51(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
+def main_HMDB51(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False, log_level="error"):
     print('extracting HMDB51 ... ')
     print('extracting videos from %s' % v_root)
     print('frame save to %s' % f_root)
@@ -152,11 +155,12 @@ def main_HMDB51(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
         v_paths = glob.glob(os.path.join(j, '*.avi'))
         v_paths = sorted(v_paths)
         Parallel(n_jobs=n_jobs)(
-            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim) for p in
+            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim,
+                                                                               log_level=log_level) for p in
             tqdm(v_paths, total=len(v_paths)))
 
 
-def main_kinetics400(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
+def main_kinetics400(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False, log_level="error"):
     # Video root for reading videos, frame root for writing
     print('extracting Kinetics400 ... ')
     if not os.path.exists(f_root): os.makedirs(f_root)
@@ -178,13 +182,14 @@ def main_kinetics400(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=Fa
         out_dir = os.path.join(f_root, v_class)
         print('\nextracting: %s' % v_class)
         Parallel(n_jobs=n_jobs)(
-            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim) for p in
+            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(p, f_root, force=force, dim=dim,
+                                                                               log_level=log_level) for p in
             tqdm(v_paths, total=len(v_paths)))
 
     sys.exit(0)
 
 
-def main_nturgbd(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False):
+def main_nturgbd(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False, log_level="error"):
     # Create universally usable pattern matchers.
     # fid_p = re.compile(r"(S\d{3}C\d{3}P\d{3}R\d{3}A\d{3})")  # A pattern object to recognize nturgbd file ids.
 
@@ -210,8 +215,8 @@ def main_nturgbd(v_root, f_root, dim=256, force=False, n_jobs=32, use_ocv=False)
 
     for i, v_paths in tqdm(enumerate(v_pathss), total=len(v_pathss)):
         Parallel(n_jobs=n_jobs)(
-            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(v_path, f_root, force=force, dim=dim) for
-            v_path in
+            delayed(extract_video_opencv if use_ocv else extract_video_ffmpeg)(v_path, f_root, force=force, dim=dim,
+                                                                               log_level=log_level) for v_path in
             tqdm(v_paths, total=len(v_paths)))
 
 
@@ -224,6 +229,8 @@ parser.add_argument('--n_jobs', default=32, type=int)
 parser.add_argument('--force', action='store_true', default=False, help="Overwrites existing files.")
 parser.add_argument('--open_cv', action='store_true', default=False,
                     help="Uses open cv instead of ffmpeg for extracting images.")
+parser.add_argument('--log_level', default="level+error",
+                    help="Depending on the version of ffmpeg, the level+error notation might not be accepted.")
 
 if __name__ == '__main__':
     # v_root is the video source path, f_root is where to store frames
@@ -240,27 +247,31 @@ if __name__ == '__main__':
                      dim=args.img_dim,
                      force=args.force,
                      n_jobs=args.n_jobs,
-                     use_ocv=args.open_cv)
+                     use_ocv=args.open_cv,
+                     log_level=args.log_level)
     elif args.dataset == "ucf101":
         main_UCF101(v_root=args.v_root,
                     f_root=args.f_root,
                     dim=args.img_dim,
                     force=args.force,
                     n_jobs=args.n_jobs,
-                    use_ocv=args.open_cv)
+                    use_ocv=args.open_cv,
+                    log_level=args.log_level)
     elif args.dataset == "hmdb51":
         main_HMDB51(v_root=args.v_root,
                     f_root=args.f_root,
                     dim=args.img_dim,
                     force=args.force,
                     n_jobs=args.n_jobs,
-                    use_ocv=args.open_cv)
+                    use_ocv=args.open_cv,
+                    log_level=args.log_level)
     elif args.dataset == "kinetics":
         main_kinetics400(v_root=args.v_root,
                          f_root=args.f_root,
                          dim=args.img_dim,
                          force=args.force,
                          n_jobs=args.n_jobs,
-                         use_ocv=args.open_cv)
+                         use_ocv=args.open_cv,
+                         log_level=args.log_level)
     else:
         raise ValueError
