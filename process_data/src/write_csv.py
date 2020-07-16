@@ -158,7 +158,7 @@ if __name__ == '__main__':
 
         main_UCF101(f_root=args.f_root,
                     csv_root=args.csv_root,
-                    splits_root=os.path.expanduser('~/datasets/UCF101/split/ucfTrainTestlist'),
+                    splits_root=args.splits_root  # '~/datasets/UCF101/split/ucfTrainTestlist'
                     )
     elif args.dataset == "hmdb51":
         if args.splits_root == "":
@@ -166,7 +166,7 @@ if __name__ == '__main__':
 
         main_HMDB51(f_root=args.f_root,
                     csv_root=args.csv_root,
-                    splits_root=os.path.expanduser('~/datasets/HMDB51/split/testTrainMulti_7030_splits'),
+                    splits_root=args.splits_root  # '~/datasets/HMDB51/split/testTrainMulti_7030_splits'
                     )
     elif args.dataset == "kinetics":
         main_Kinetics400(f_root=args.f_root,
