@@ -42,7 +42,7 @@ global args
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
-parser.add_argument('--dataset', default='nturgbd', type=str)
+parser.add_argument('--dataset', default='kinetics400', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
 parser.add_argument('--rgb_net', default='resnet18', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
@@ -61,6 +61,7 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
+parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
 parser.add_argument('--loader_workers', default=16, type=int,
@@ -75,10 +76,24 @@ parser.add_argument('--train_csv',
 parser.add_argument('--test_csv',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/test_set.csv"),
                     type=str)
+
+# TODO: Correct train json.
+parser.add_argument('--train_json_kinetics',
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/kinetics_val_label.json"),
+                    type=str)
+parser.add_argument('--test_json_kinetics',
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/kinetics_val_label.json"),
+                    type=str)
 parser.add_argument('--nturgbd-video-info',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/video_info.csv"),
                     type=str)
 parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/datasets/nturgbd/skele-motion"),
+                    type=str)
+parser.add_argument('--kinetics-video-info',
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400/video_info.csv"),
+                    type=str)
+parser.add_argument('--kinetics-skele-motion',
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/skele-motion"),
                     type=str)
 parser.add_argument('--split-mode', default="perc", type=str)
 parser.add_argument('--split-test-frac', default=0.2, type=float)
@@ -265,6 +280,9 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
         B = input_seq.size(0)
 
         # print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
+
+        if (input_seq != input_seq).any() or (sk_seq != sk_seq).any():
+            print("found")
 
         score, targets = model(input_seq, sk_seq)
         # visualize
@@ -465,16 +483,7 @@ def prepare_augmentations(augmentation_settings, args):
             ToTensor(),
             Normalize()
             ])
-    elif args.dataset == 'k400':  # designed for kinetics400, short size=150, rand crop to 128x128
-        transform = transforms.Compose([
-            RandomSizedCrop(size=args.img_dim, consistent=True, p=1.0),
-            RandomHorizontalFlip(consistent=True),
-            RandomGray(consistent=False, p=0.5),
-            ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=1.0),
-            ToTensor(),
-            Normalize()
-            ])
-    elif args.dataset == 'nturgbd':  # designed for nturgbd, short size=150, rand crop to 128x128
+    elif args.dataset == 'nturgbd' or args.dataset == 'kinetics400':  # designed for nturgbd, short size=150, rand crop to 128x128
         transform = transforms.Compose([
             RandomRotation(degree=augmentation_settings["rot_range"]),
             RandomSizedCrop(size=args.img_dim, consistent=True),
@@ -492,14 +501,16 @@ def prepare_augmentations(augmentation_settings, args):
 
 def get_data(transform, mode='train', augmentation_settings=None, use_dali=False):
     if not use_dali:
-        if args.dataset == 'k400':
-            use_big_K400 = args.img_dim > 140
-            dataset = Kinetics400_full_3d(mode=mode,
+        if args.dataset == 'kinetics400':
+            dataset = Kinetics400_full_3d(split=mode,
                                           transform=transform,
                                           seq_len=args.seq_len,
-                                          num_seq=args.num_seq,
-                                          downsample=5,
-                                          big=use_big_K400)
+                                          downsample=args.ds,
+                                          video_info=args.kinetics_video_info,
+                                          skele_motion_root=args.kinetics_skele_motion,
+                                          split_mode=args.split_mode,
+                                          sample_limit=args.max_samples,
+                                          use_cache=not args.no_cache)
         elif args.dataset == 'ucf101':
             dataset = UCF101_3d(mode=mode,
                                 transform=transform,

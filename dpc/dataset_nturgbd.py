@@ -401,10 +401,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
     def __init__(self,
                  split='train',
                  transform=None,
-                 seq_len=10,
-                 num_seq=1,
+                 seq_len=30,
                  downsample=3,
-                 big=False,
                  return_label=False,
                  nturgbd_video_info=None,
                  skele_motion_root=None,
@@ -423,29 +421,30 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         print('Using nturgbd data (150x150)')
         ndu = NTURGBDDatasetUtils
 
-        self.video_info_skeletons = {}
+        print("=================================")
+        print('Dataset NTURGBD {} split (Split method: {})'.format(split, split_mode))
+        if split_mode == "perc":
+            print("Train/Val ratio: {}/{}".format(1 - split_frac, split_frac))
 
         self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit)
 
-        v_file_count = len(self.sample_info)
-
         min_frame_count = self.seq_len * self.downsample
 
+        sample_count = len(self.sample_info)
         self.sample_info = ndu.filter_too_short(self.sample_info, min_frame_count)
+        print("Dropped {} of {} samples due to insufficient rgb video length ({} frames needed).".format(
+            sample_count - len(self.sample_info), sample_count, min_frame_count))
 
         sample_count = len(self.sample_info)
-
-        print("Dropped {} of {} samples due to insufficient rgb video length ({} frames needed).".format(
-            v_file_count - sample_count, v_file_count, min_frame_count))
-
         self.sample_info = ndu.filter_nturgbd_by_split_mode(self.sample_info, self.split, self.split_mode, split_frac)
-
+        print("Selected {} of {} video samples for the {} split.".format(len(self.sample_info), sample_count,
+                                                                         self.split))
+        sample_count = len(self.sample_info)
         self.sk_info = ndu.get_skeleton_info(skele_motion_root)
-
         self.sample_info = ndu.filter_by_missing_skeleton_info(self.sample_info, self.sk_info)
-
-        print("Dropped {} of {} samples due to missing skeleton information.".format(
-            sample_count - len(self.sample_info), sample_count))
+        print(
+            "Dropped {} of {} samples due to missing skeleton information.".format(sample_count - len(self.sample_info),
+                                                                                   sample_count))
 
         print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
 

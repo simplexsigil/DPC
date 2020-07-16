@@ -74,6 +74,13 @@ class SkeleContrast(nn.Module):
 
         features = self.skele_motion_backbone(block_sk)
 
+        is_zero = features == 0.0
+
+        zero_row = is_zero.all(dim=1)
+
+        # TODO: this is a dirty hack, weights are nan if a row is scored which is completely zero, find better solution.
+        features[zero_row] = torch.rand(1) * 0.0000000001  # This prevents the norm of the 0 vector to be nan.
+
         return features
 
     def _forward_rgb(self, block_rgb):
@@ -150,6 +157,7 @@ class SkeleContrast(nn.Module):
         elif matching_fn == "cos-nt-xent":
             x_norm = x / torch.norm(x, dim=1, keepdim=True)
             y_norm = y / torch.norm(y, dim=1, keepdim=True)
+
             xy_n = torch.matmul(x_norm, y_norm.transpose(0, 1))
             xy_nt = xy_n / temp_tao
 
@@ -239,11 +247,10 @@ if __name__ == '__main__':
     d2 = -SkeleContrast.pairwise_scores(a, b, matching_fn="nt-euclidean")
     tic3 = time.perf_counter()
 
-    print("{:.10f}".format(tic2-tic1))
-    print("{:.10f}".format(tic3-tic2))
-    print((tic3-tic2) / (tic2-tic1))
+    print("{:.10f}".format(tic2 - tic1))
+    print("{:.10f}".format(tic3 - tic2))
+    print((tic3 - tic2) / (tic2 - tic1))
 
     print(d1 - d0)
 
     print(d2 - d0)
-
