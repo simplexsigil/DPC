@@ -61,6 +61,8 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
+parser.add_argument('--memory_contrast', default=None, type=int, help='Number of contrast vectors. '
+                                                                      'Batch contrast is used if not applied.')
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
@@ -130,9 +132,9 @@ def main():
 
     # TODO: Set with arguments.
     augmentation_settings = {
-        "rot_range":      (-30., 30.),
+        "rot_range":      (-30, 30),
         "hue_range":      (-180, 180),
-        "sat_range":      (0., 1.3),
+        "sat_range":      (0.0, 1.5),
         "val_range":      (0.5, 1.5),
         "hue_prob":       1.,
         "crop_arr_range": (0.15, 1.)
@@ -167,7 +169,8 @@ def main():
 
     check_and_prepare_parameters(model, args.training_focus)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
 
     # Prepare Loss
     # Contrastive loss can be implemented with CrossEntropyLoss with vector similarity.
@@ -196,14 +199,35 @@ def main():
     train_loader, train_len = get_data(transform, 'train', augmentation_settings, use_dali=args.use_dali)
     val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
 
-    training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc)
+    training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, args.batch_size,
+                  args.memory_contrast, best_acc)
 
 
-def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, best_acc=0.0,
-                  best_epoch=0):
+def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, batch_size,
+                  memory_contrast_size=None, best_acc=0.0, best_epoch=0, representation_size=512):
+    memories = None
+    if memory_contrast_size is not None:
+        # torch.autograd.set_detect_anomaly(True)
+
+        memories = {"skeleton": None, "video": None}
+        memories["skeleton"] = torch.rand((len(train_loader.dataset), representation_size),
+                                          requires_grad=False) - 0.5
+
+        sk_norms = torch.norm(memories["skeleton"], dim=1, keepdim=True)
+
+        memories["skeleton"] = memories["skeleton"] / sk_norms
+
+        memories["video"] = torch.rand((len(train_loader.dataset), representation_size), requires_grad=False) - 0.5
+
+        vid_norms = torch.norm(memories["video"], dim=1, keepdim=True)
+        memories["video"] = memories["video"] / vid_norms
+
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch)
+        plot_angles(memories["skeleton"], memories["video"])
+        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
+                                                                                  memories, memory_contrast_size)
+
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
         if args.use_dali:
@@ -245,9 +269,11 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
+def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=None, memory_contrast_size=None):
     data_loading_times = []
     cuda_transfer_times = []
+    memory_selection_times = []
+    memory_update_times = []
     calculation_times = []
     losses = AverageMeter()
     accuracy = AverageMeter()
@@ -264,59 +290,105 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
         stop_time = time.perf_counter()  # Timing data loading
         data_loading_times.append(stop_time - start_time)
 
-        input_seq, sk_seq = out
+        bat_idxs, input_seq, sk_seq = out
+
+        batch_size = input_seq.size(0)
+
+        start_time = time.perf_counter()  # Timing calculation
+
+        if memories is not None:
+            perm = list(range(memories["video"].shape[0]))
+            bat_idxs_lst = sorted(bat_idxs.tolist(), reverse=True)
+            for bat_idx in bat_idxs_lst:
+                perm.pop(bat_idx)
+
+            random.shuffle(perm)
+
+            rand_idxs = torch.tensor(perm[:memory_contrast_size - batch_size])
+
+            rand_idxs = torch.cat((bat_idxs, rand_idxs), dim=0)
+
+            mem_rgb = memories["video"][rand_idxs]
+            mem_sk = memories["skeleton"][rand_idxs]
+
+        else:
+            mem_rgb = None
+            mem_sk = None
+
+        stop_time = time.perf_counter()
+
+        memory_selection_times.append(stop_time - start_time)
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
         input_seq = input_seq.to(cuda_device)
         sk_seq = sk_seq.to(cuda_device)
 
+        if mem_rgb is not None:
+            mem_rgb.to(cuda_device)
+        if mem_sk is not None:
+            mem_sk.to(cuda_device)
+
         stop_time = time.perf_counter()
 
         cuda_transfer_times.append(stop_time - start_time)
 
-        start_time = time.perf_counter()  # Timing calculation
+        start_time = time.perf_counter()
 
-        B = input_seq.size(0)
+        score, targets, mem_sk, mem_rgb = model(input_seq, sk_seq, mem_rgb, mem_sk)
 
-        # print("Input seq: {} | Sk seq: {}".format(input_seq.device, sk_seq.device))
-
-        if (input_seq != input_seq).any() or (sk_seq != sk_seq).any():
-            print("found")
-
-        score, targets = model(input_seq, sk_seq)
         # visualize
         if (iteration == 0) or (
                 iteration == args.print_freq):  # I suppose this is a bug, since it does not write out images on print frequency, but only the first and second time.
-            if B > 2: input_seq = input_seq[0:2, :]
+            if batch_size > 2: input_seq = input_seq[0:2, :]
             writer_train.add_image('input_seq',
                                    de_normalize(vutils.make_grid(
                                        input_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim, args.img_dim),
                                        nrow=args.seq_len)),
                                    iteration)
-        del input_seq, sk_seq
-        target_flattened = targets.detach()  # It's the diagonals.
+        # del input_seq, sk_seq
+        targets_detached = targets.detach()  # It's the diagonals.
 
-        loss = criterion(score, target_flattened)
+        loss = criterion(score, targets_detached)
 
-        top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 5))
+        top1, top3, top5 = calc_topk_accuracy(score, targets_detached, (1, 3, 5))
 
-        accuracy_list[0].update(top1.item(), B)
-        accuracy_list[1].update(top3.item(), B)
-        accuracy_list[2].update(top5.item(), B)
+        accuracy_list[0].update(top1.item(), batch_size)
+        accuracy_list[1].update(top3.item(), batch_size)
+        accuracy_list[2].update(top5.item(), batch_size)
 
-        losses.update(loss.item(), B)
-        accuracy.update(top1.item(), B)
+        losses.update(loss.item(), batch_size)
+        accuracy.update(top1.item(), batch_size)
 
         optimizer.zero_grad()
         loss.backward()
+
         optimizer.step()
 
-        del score, target_flattened, loss
+        # del score, targets_detached, loss
 
         stop_time = time.perf_counter()
 
         calculation_times.append(stop_time - start_time)
+
+        start_time = time.perf_counter()
+
+        if mem_sk is not None:
+            a = 0.1
+            mem_sk_new = a * mem_sk.clone().detach().cpu() + (1. - a) * memories["skeleton"][bat_idxs]
+            mem_sk_new.requires_grad = False
+
+            mem_rgb_new = a * mem_rgb.clone().detach().cpu() + (1. - a) * memories["video"][bat_idxs]
+            mem_rgb_new.requires_grad = False
+
+            memories["skeleton"][bat_idxs] = mem_sk_new
+            memories["video"][bat_idxs] = mem_rgb_new
+
+            # del mem_sk, mem_rgb
+
+        stop_time = time.perf_counter()
+
+        memory_update_times.append(stop_time - start_time)
 
         if idx % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
@@ -332,10 +404,11 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch):
         start_time = time.perf_counter()
         tic = time.time()
 
-    print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
+    print(("Data Loading: {:.4f}s | Cuda Transfer: {:.4f}s | Memory Selection: {:.4f}s | " +
+           "Avg t calculation: {:.4f}s | Memory Update: {:.4f}s").format(
         sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
-        sum(calculation_times) / len(calculation_times)
-        ))
+        sum(memory_selection_times) / len(memory_selection_times), sum(calculation_times) / len(calculation_times),
+        sum(memory_update_times) / len(memory_update_times)))
     return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
 
 
@@ -346,13 +419,13 @@ def validate(data_loader, model, epoch):
     model.eval()
 
     with torch.no_grad():
-        for idx, out in tqdm(enumerate(data_loader)):
-            input_seq, sk_seq = out
+        for idx, out in enumerate(data_loader):
+            bat_idx, input_seq, sk_seq = out
 
             input_seq = input_seq.to(cuda_device)
             B = input_seq.size(0)
 
-            score, targets = model(input_seq, sk_seq)
+            score, targets, _, _ = model(input_seq, sk_seq)
 
             del input_seq, sk_seq
 
@@ -611,6 +684,32 @@ def write_settings_file(args, exp_path):
         f.write("\n\n")
 
         f.write(training_description)
+
+
+def plot_angles(memories_sk: torch.Tensor, memories_rgb: torch.Tensor):
+    import matplotlib
+    matplotlib.use('module://backend_interagg')
+    import matplotlib.pyplot as plt
+
+    memories_sk_beg_one = memories_sk[:100]
+    idxs = list(range(100))
+    random.shuffle(idxs)
+
+    memories_sk_beg_two = memories_sk_beg_one[idxs]
+
+    mem_sk_beg_angles = torch.sum(torch.mul(memories_sk_beg_one, memories_sk_beg_two), dim=1)
+    mem_sk_beg_angles = torch.flatten(mem_sk_beg_angles)
+
+    plt.hist(mem_sk_beg_angles, 100, facecolor='b', density=True, alpha=0.75)
+
+    plt.xlabel('Cos Similarity')
+    plt.ylabel('Density')
+    plt.title('Angle Distribution')
+    # plt.text(60, .025, r'$\mu=100,\ \sigma=15$')
+    plt.xlim(-1.5, 1.5)
+    # plt.ylim(0, 0.03)
+    plt.grid(True)
+    plt.show()
 
 
 if __name__ == '__main__':

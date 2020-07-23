@@ -408,13 +408,15 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  skele_motion_root=None,
                  split_mode="perc",
                  split_frac=0.1,
-                 sample_limit=None):
+                 sample_limit=None,
+                 sample_mid_seq=True):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
         self.seq_len = seq_len
         self.downsample = downsample
         self.return_label = return_label
+        self.sample_mid_seq = sample_mid_seq
 
         self.use_skeleton = skele_motion_root is not None
 
@@ -460,7 +462,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
     def __getitem__(self, index):
         sample = self.sample_info.iloc[index]
 
-        frame_indices = DatasetUtils.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"])
+        frame_indices = DatasetUtils.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"], self.sample_mid_seq)
 
         seq = [DatasetUtils.pil_loader(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1))) for i in frame_indices]
 
@@ -487,16 +489,16 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
 
             if self.return_label:
                 label = torch.tensor([sample["action"]], dtype=torch.long)
-                return t_seq, sk_seq, label
+                return index, t_seq, sk_seq, label
 
             else:
-                return t_seq, sk_seq
+                return index, t_seq, sk_seq
 
         if self.return_label:
             label = torch.tensor([sample["action"]], dtype=torch.long)
-            return t_seq, label
+            return index, t_seq, label
         else:
-            return t_seq
+            return index, t_seq
 
     def __len__(self):
         return len(self.sample_info)

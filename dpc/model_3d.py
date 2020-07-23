@@ -15,6 +15,88 @@ class Print(nn.Module):
         return x
 
 
+def get_debug_hook_grad(name):
+    def debug_hook_grad(grad):
+        print("Debug hook grad {}\n"
+              "Has NaN: {}\n"
+              "Has inf: {}\n"
+              "Has zero: {}\n"
+              "Min: {}\n"
+              "Max: {}\n".format(
+            name,
+            torch.any(torch.isnan(grad)),
+            torch.any(torch.isinf(grad)),
+            torch.any(grad == 0.0),
+            torch.min(grad),
+            torch.max(grad)
+            ))
+
+        return grad
+
+    return debug_hook_grad
+
+
+class SkeleMotionBackbone(nn.Module):
+    def __init__(self, crossm_vector_length, debug=False):
+        super(SkeleMotionBackbone, self).__init__()
+
+        self.crossm_vector_length = crossm_vector_length
+
+        self.conv1 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=(3, 3), stride=1)
+        # nn.BatchNorm2d(16)
+        self.relu1 = nn.ReLU()
+
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3, 3))
+        self.maxpool2 = nn.MaxPool2d(3, stride=1)
+        self.relu2 = nn.ReLU()
+
+        self.conv3 = nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 5))
+        self.maxpool3 = nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2))
+        # nn.BatchNorm2d(32),
+        self.relu3 = nn.ReLU()
+
+        self.conv4 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3))
+        self.maxpool4 = nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2))
+        # nn.BatchNorm2d(64),
+        self.relu4 = nn.ReLU()
+
+        self.flatten = nn.Flatten()
+        self.linear1 = nn.Linear(in_features=1536, out_features=self.crossm_vector_length)
+        self.relu5 = nn.ReLU()
+
+        # nn.Dropout(p=0.5),
+        self.linear2 = nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length)
+
+        if debug:
+            self.linear1.weight.register_hook(get_debug_hook_grad("Linear 1"))
+            self.linear2.weight.register_hook(get_debug_hook_grad("Linear 2"))
+
+    def forward(self, skele_motion_data):
+        fe = self.conv1(skele_motion_data)
+        fe = self.relu1(fe)
+
+        fe = self.conv2(fe)
+        fe = self.maxpool2(fe)
+        fe = self.relu2(fe)
+
+        fe = self.conv3(fe)
+        fe = self.maxpool3(fe)
+        fe = self.relu3(fe)
+
+        fe = self.conv4(fe)
+        fe = self.maxpool4(fe)
+        fe = self.relu4(fe)
+
+        fe = self.flatten(fe)
+
+        fe = self.linear1(fe)
+        fe = self.relu5(fe)
+
+        fe = self.linear2(fe)
+
+        return fe
+
+
 class SkeleContrast(nn.Module):
     '''Module which performs contrastive learning by matching extracted feature
     vectors from the skele-motion skeleton representation and features extracted from RGB videos with a Resnet 18.'''
@@ -41,27 +123,34 @@ class SkeleContrast(nn.Module):
             nn.Linear(4096, self.crossm_vector_length),
             )
 
-        self.skele_motion_backbone = nn.Sequential(
-            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=(3, 3), stride=1),
-            # nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3, 3)),
-            nn.MaxPool2d(3, stride=1),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 5)),
-            nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
-            # nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3)),
-            nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
-            # nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(in_features=1536, out_features=self.crossm_vector_length),
-            nn.ReLU(),
-            # nn.Dropout(p=0.5),
-            nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
-            )
+        self.skele_motion_backbone = SkeleMotionBackbone(self.crossm_vector_length)
+
+        # self.skele_motion_backbone = nn.Sequential(
+        #     nn.Conv2d(in_channels=6, out_channels=16, kernel_size=(3, 3), stride=1),
+        #     # nn.BatchNorm2d(16),
+        #     nn.ReLU(),
+        #     nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3, 3)),
+        #     nn.MaxPool2d(3, stride=1),
+        #     nn.ReLU(),
+        #     nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 5)),
+        #     nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
+        #     # nn.BatchNorm2d(32),
+        #     nn.ReLU(),
+        #     nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3)),
+        #     nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
+        #     # nn.BatchNorm2d(64),
+        #     nn.ReLU(),
+        #     nn.Flatten(),
+        #     nn.Linear(in_features=1536, out_features=self.crossm_vector_length),
+        #     nn.ReLU(),
+        #     # nn.Dropout(p=0.5),
+        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
+        #     )
+
+        # for name, param in self.skele_motion_backbone.named_parameters():
+        #     # if the param is from a linear and is a bias
+        #     if "weight" in name:
+        #         param.register_hook(alarm)
 
         self.mask = None
         self._initialize_weights(self.dpc_feature_conversion)
@@ -79,8 +168,7 @@ class SkeleContrast(nn.Module):
         zero_row = is_zero.all(dim=1)
 
         # TODO: this is a dirty hack, weights are nan if a row is scored which is completely zero, find better solution.
-        features[zero_row] = torch.rand(1) * 0.0000000001  # This prevents the norm of the 0 vector to be nan.
-
+        features[zero_row] = 0.00000001  # This prevents the norm of the 0 vector to be nan.
         return features
 
     def _forward_rgb(self, block_rgb):
@@ -102,7 +190,17 @@ class SkeleContrast(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk):
+    def forward(self, block_rgb, block_sk, mem_rgb=None, mem_sk=None, debug=False):
+        if debug:
+            assert not (torch.any(torch.isnan(block_rgb)) or torch.any(torch.isinf(block_rgb)))
+            assert not (torch.any(torch.isnan(block_sk)) or torch.any(torch.isinf(block_sk)))
+
+            if mem_rgb is not None:
+                assert not (torch.any(torch.isnan(mem_rgb)) or torch.any(torch.isinf(mem_rgb)))
+                assert not (torch.any(torch.isnan(mem_sk)) or torch.any(torch.isinf(mem_sk)))
+
+        bs = block_rgb.shape[0]
+
         pred_sk = self._forward_sk(block_sk)  # (B, N, D)
         pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
 
@@ -110,13 +208,57 @@ class SkeleContrast(nn.Module):
         pred_rgb = pred_rgb.contiguous()  # .view(B*N, D)
         pred_sk = pred_sk.contiguous()  # .view(B*N, D)
 
-        # score = torch.matmul(pred_sk, pred_rgb.transpose(0, 1))
-        # score = self.pairwise_euc_dist(pred_sk, pred_rgb)
-        score = SkeleContrast.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
+        pred_rgb = pred_rgb / torch.norm(pred_rgb, dim=1, keepdim=True)
+        pred_sk = pred_sk / torch.norm(pred_sk, dim=1, keepdim=True)
 
-        targets = list(range(len(score)))
+        if (mem_rgb is None):
+            # This uses batchwise contrast.
+            score = SkeleContrast.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
 
-        return score, torch.LongTensor(targets).to(block_rgb.device)
+            targets = list(range(len(score)))
+
+            return score, torch.LongTensor(targets).to(block_rgb.device), None, None
+        else:
+            score_x, score_y = SkeleContrast.memory_contrast_scores(x=pred_rgb, y=pred_sk, x_mem=mem_rgb, y_mem=mem_sk,
+                                                                    matching_fn=self.score_function)
+
+            score = torch.cat((score_x, score_y), dim=0)
+
+            targets = torch.tensor(list(range(bs)) * 2)
+
+            return score, torch.LongTensor(targets).to(block_rgb.device), pred_sk, pred_rgb
+
+    @staticmethod
+    def memory_contrast_scores(x: torch.Tensor,
+                               y: torch.Tensor,
+                               x_mem: torch.Tensor,
+                               y_mem: torch.Tensor,
+                               matching_fn: str,
+                               temp_tao=0.1) -> (torch.Tensor, torch.Tensor):
+        if matching_fn == "cos-nt-xent":
+            # Implement memory contrast
+            # We always set the first vector to be the ground truth.
+
+            results_x = []
+            results_y = []
+
+            batch_size = x.shape[0]
+            for i in range(batch_size):
+                # The scores are calculated between the output of one modality and the output
+                # of the other modality. The first vectors are the ground truth (other modality).
+
+                scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
+                scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
+
+                results_x.append(scores_x_i)
+                results_y.append(scores_y_i)
+
+            results_x = torch.cat(results_x, dim=0)
+            results_y = torch.cat(results_y, dim=0)
+
+            return results_x, results_y
+        else:
+            raise ValueError
 
     @staticmethod
     def pairwise_scores(x: torch.Tensor,

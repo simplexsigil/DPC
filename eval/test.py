@@ -418,6 +418,7 @@ def test(data_loader, model):
                     nn.functional.softmax(output, 2),
                     0), 0, keepdim=True),
                 target, (1, 5))
+
             acc_top1.update(top1.item(), B)
             acc_top5.update(top5.item(), B)
             del top1, top5

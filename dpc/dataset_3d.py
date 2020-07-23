@@ -44,7 +44,7 @@ class DatasetUtils:
         return video_info
 
     @staticmethod
-    def idx_sampler(vlen, seq_len, downsample, vpath):
+    def idx_sampler(vlen, seq_len, downsample, vpath, sample_mid_seq=False):
         '''sample index from a video'''
         if vlen - seq_len * downsample < 0:
             print("Tried to sample a video which is too short. This should not happen after filtering short videos."
@@ -52,7 +52,10 @@ class DatasetUtils:
             return [None]
 
         # Randomly start anywhere within the video (as long as the remainder is long enough).
-        start_idx = np.random.choice(range(vlen - seq_len * downsample)) if vlen - seq_len * downsample > 0 else 0
+        if not sample_mid_seq:
+            start_idx = np.random.choice(range(vlen - seq_len * downsample)) if vlen - seq_len * downsample > 0 else 0
+        else:
+            start_idx = (vlen - seq_len * downsample) // 2 if vlen - seq_len * downsample > 0 else 0
 
         seq_idxs = start_idx + np.arange(seq_len) * downsample
 
@@ -610,16 +613,16 @@ class Kinetics400_full_3d(data.Dataset):
 
             if self.return_label:
                 label = torch.tensor([sample["action"]], dtype=torch.long)
-                return t_seq, sk_seq, label
+                return index, t_seq, sk_seq, label
 
             else:
-                return t_seq, sk_seq
+                return index, t_seq, sk_seq
 
         if self.return_label:
             label = torch.tensor([sample["action"]], dtype=torch.long)
-            return t_seq, label
+            return index, t_seq, label
         else:
-            return t_seq
+            return index, t_seq
 
     def __len__(self):
         return len(self.sample_info)
