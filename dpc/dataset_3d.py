@@ -18,10 +18,10 @@ Some code from Tengda Han: https://github.com/TengdaHan/DPC
 """
 
 import glob
+import multiprocessing as mp
 import os
 import re
 import time
-import multiprocessing as mp
 
 import pandas as pd
 import torch
@@ -287,7 +287,7 @@ class KineticsDatasetUtils(DatasetUtils):
         return kdu.action_dict_decode[action_code] if zero_indexed else kdu.action_dict_decode[action_code - 1]
 
     @staticmethod
-    def read_video_info(video_info_csv, extract_infos=True, max_samples=None, in_parallel=True) -> pd.DataFrame:
+    def read_video_info(video_info_csv, extract_infos=True, max_samples=None, worker_count=None) -> pd.DataFrame:
         kdu = KineticsDatasetUtils
 
         sample_infos = pd.read_csv(video_info_csv, header=0, names=["path", "frame_count"])
@@ -296,13 +296,13 @@ class KineticsDatasetUtils(DatasetUtils):
             sample_infos = sample_infos.sample(max_samples)
 
         if extract_infos:
-            if not in_parallel:
+            if worker_count == 0:
                 sample_infos = kdu.extract_infos(sample_infos)
             else:
-                cores = mp.cpu_count()
-                print("Using multiprocessing with {} cores.".format(cores))
-                df_split = np.array_split(sample_infos, cores)
-                pool = mp.Pool(cores)
+                procs = mp.cpu_count() if worker_count is None else worker_count
+                print("Using multiprocessing with {} processes.".format(procs))
+                df_split = np.array_split(sample_infos, procs)
+                pool = mp.Pool(procs)
 
                 sample_infos = pd.concat(pool.map(kdu.extract_infos, df_split))
 
@@ -386,7 +386,7 @@ class KineticsDatasetUtils(DatasetUtils):
         return df
 
     @staticmethod
-    def get_skeleton_info(skele_motion_root, in_parallel=True) -> pd.DataFrame:
+    def get_skeleton_info(skele_motion_root, worker_count=None) -> pd.DataFrame:
         kdu = KineticsDatasetUtils
 
         skeleton_paths = glob.glob(os.path.join(skele_motion_root, "*.npz"))
@@ -412,11 +412,11 @@ class KineticsDatasetUtils(DatasetUtils):
 
         sk_info["skeleton_info_type"] = sk_info["sk_file"].apply(_extract_type)
 
-        if in_parallel:
-            cores = mp.cpu_count()
-            print("Using multiprocessing with {} cores.".format(cores))
-            df_split = np.array_split(sk_info, cores)
-            pool = mp.Pool(cores)
+        if worker_count != 0:
+            procs = mp.cpu_count() if worker_count is None else worker_count
+            print("Using multiprocessing with {} processes.".format(procs))
+            df_split = np.array_split(sk_info, procs)
+            pool = mp.Pool(procs)
 
             sk_info = pd.concat(pool.map(kdu.df_get_skeleton_length, df_split))
 
@@ -464,7 +464,8 @@ class Kinetics400_full_3d(data.Dataset):
                  split_frac=0.1,
                  sample_limit=None,
                  use_cache=False,
-                 cache_folder="cache"):
+                 cache_folder="cache",
+                 sample_mid_seq=True):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -473,6 +474,8 @@ class Kinetics400_full_3d(data.Dataset):
         self.return_label = return_label
 
         self.use_skeleton = skele_motion_root is not None
+
+        self.sample_mid_seq = sample_mid_seq
 
         tqdm.pandas(mininterval=0.5)
 
@@ -576,7 +579,8 @@ class Kinetics400_full_3d(data.Dataset):
             sk_seq, skeleton_frame_count = kdu.load_skeleton_seqs(self.sk_info, sample["id"])
             v_len = min(v_len, skeleton_frame_count)
 
-        frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"])
+        frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"],
+                                        sample_mid_seq=self.sample_mid_seq)
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
 

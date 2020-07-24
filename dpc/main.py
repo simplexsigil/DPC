@@ -199,11 +199,11 @@ def main():
     train_loader, train_len = get_data(transform, 'train', augmentation_settings, use_dali=args.use_dali)
     val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
 
-    training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, args.batch_size,
+    training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, img_path,
                   args.memory_contrast, best_acc)
 
 
-def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, batch_size,
+def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, img_path,
                   memory_contrast_size=None, best_acc=0.0, best_epoch=0, representation_size=512):
     memories = None
     if memory_contrast_size is not None:
@@ -224,7 +224,8 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        plot_angles(memories["skeleton"], memories["video"])
+        plot_angle_distribution(memories["skeleton"], memories["video"], epoch, img_path)
+
         train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
                                                                                   memories, memory_contrast_size)
 
@@ -686,30 +687,58 @@ def write_settings_file(args, exp_path):
         f.write(training_description)
 
 
-def plot_angles(memories_sk: torch.Tensor, memories_rgb: torch.Tensor):
-    import matplotlib
-    matplotlib.use('module://backend_interagg')
-    import matplotlib.pyplot as plt
+def rand_self_cos_similarities(x, samples=1000):
+    samples = min(len(x), samples)
 
-    memories_sk_beg_one = memories_sk[:100]
-    idxs = list(range(100))
+    idxs = list(range(samples))
     random.shuffle(idxs)
 
-    memories_sk_beg_two = memories_sk_beg_one[idxs]
+    x = x[:samples]
+    y = x[idxs]
 
-    mem_sk_beg_angles = torch.sum(torch.mul(memories_sk_beg_one, memories_sk_beg_two), dim=1)
-    mem_sk_beg_angles = torch.flatten(mem_sk_beg_angles)
+    angles = torch.sum(torch.mul(x, y), dim=1)
+    angles = angles.reshape((-1,))
 
-    plt.hist(mem_sk_beg_angles, 100, facecolor='b', density=True, alpha=0.75)
+    return angles
 
-    plt.xlabel('Cos Similarity')
-    plt.ylabel('Density')
-    plt.title('Angle Distribution')
-    # plt.text(60, .025, r'$\mu=100,\ \sigma=15$')
-    plt.xlim(-1.5, 1.5)
-    # plt.ylim(0, 0.03)
-    plt.grid(True)
-    plt.show()
+def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tensor, epoch: int, base_path="."):
+    # matplotlib.use('module://backend_interagg')
+    import matplotlib.pyplot as plt
+
+    img_path = os.path.join(base_path, "angle_dists")
+
+    if not os.path.exists(img_path):
+        os.makedirs(img_path)
+
+    mem_sk_beg_angles = rand_self_cos_similarities(memories_sk[:1000])
+    mem_sk_end_angles = rand_self_cos_similarities(memories_sk[:-1000])
+    mem_rgb_start_angles = rand_self_cos_similarities(memories_rgb[:1000])
+    mem_rgb_end_angles = rand_self_cos_similarities(memories_rgb[:-1000])
+
+    angle_dict = {"Skeleton Memory Head Angles": mem_sk_beg_angles,
+                  "RGB Memory Head Angles": mem_rgb_start_angles,
+                  "Skeleton Memory Tail Angles": mem_sk_end_angles,
+                  "RGB Memory Tail Angles": mem_rgb_end_angles,
+                  }
+
+    fig, axs = plt.subplots(2, 2, sharex='col',figsize=(15,15))
+
+    for idx, (name, angles) in enumerate(angle_dict.items()):
+        idx_1 = idx // 2
+        idx_2 = idx % 2
+        ax = axs[idx_1, idx_2]
+        ax.hist(angles, 100, facecolor='b', density=True, alpha=0.75)
+
+        ax.set_title(name)
+
+        if idx_1 == 1 :
+            ax.set_xlabel('Cosine Similarity')
+
+        ax.set_ylabel('Count')
+        ax.set_xlim(-1.1, 1.1)
+        ax.grid(True)
+
+    fig.savefig(os.path.join(img_path, 'angle_distribution_ep{}.png'.format(epoch)))
 
 
 if __name__ == '__main__':
