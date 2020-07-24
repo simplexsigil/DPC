@@ -227,7 +227,7 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
         plot_angle_distribution(memories["skeleton"], memories["video"], epoch, img_path)
 
         train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
-                                                                                  memories, memory_contrast_size)
+                                                                                  memories, memory_contrast_size, args)
 
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
@@ -270,7 +270,8 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=None, memory_contrast_size=None):
+def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=None, memory_contrast_size=None,
+                                 args=None):
     data_loading_times = []
     cuda_transfer_times = []
     memory_selection_times = []
@@ -305,7 +306,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
 
             random.shuffle(perm)
 
-            rand_idxs = torch.tensor(perm[:memory_contrast_size - batch_size])
+            rand_idxs = torch.tensor(perm[:memory_contrast_size * len(args.gpu) - batch_size])
 
             rand_idxs = torch.cat((bat_idxs, rand_idxs), dim=0)
 
@@ -701,6 +702,7 @@ def rand_self_cos_similarities(x, samples=1000):
 
     return angles
 
+
 def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tensor, epoch: int, base_path="."):
     # matplotlib.use('module://backend_interagg')
     import matplotlib.pyplot as plt
@@ -716,12 +718,12 @@ def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tenso
     mem_rgb_end_angles = rand_self_cos_similarities(memories_rgb[:-1000])
 
     angle_dict = {"Skeleton Memory Head Angles": mem_sk_beg_angles,
-                  "RGB Memory Head Angles": mem_rgb_start_angles,
+                  "RGB Memory Head Angles":      mem_rgb_start_angles,
                   "Skeleton Memory Tail Angles": mem_sk_end_angles,
-                  "RGB Memory Tail Angles": mem_rgb_end_angles,
+                  "RGB Memory Tail Angles":      mem_rgb_end_angles,
                   }
 
-    fig, axs = plt.subplots(2, 2, sharex='col',figsize=(15,15))
+    fig, axs = plt.subplots(2, 2, sharex='col', figsize=(15, 15))
 
     for idx, (name, angles) in enumerate(angle_dict.items()):
         idx_1 = idx // 2
@@ -731,7 +733,7 @@ def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tenso
 
         ax.set_title(name)
 
-        if idx_1 == 1 :
+        if idx_1 == 1:
             ax.set_xlabel('Cosine Similarity')
 
         ax.set_ylabel('Count')
