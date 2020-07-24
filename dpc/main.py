@@ -155,7 +155,7 @@ def main():
     img_path, model_path, exp_path = set_path(args)
 
     # Setup cuda
-    cuda_device, device_ids = check_and_prepare_cuda(args.gpu)
+    cuda_device, args.gpu = check_and_prepare_cuda(args.gpu)
 
     # Prepare model
     model = select_and_prepare_model(args.model)
@@ -164,7 +164,7 @@ def main():
     # and performs scatter gather operations on batches and resulting gradients.
     # Distributes batches on mutiple devices to train model in parallel automatically.
     # If we use dali, the last device is used for data-loading only.
-    model = nn.DataParallel(model, device_ids=args.gpu if len(args.gpu) < 2 or not args.use_dali else args.gpu[0:-1])
+    model = nn.DataParallel(model, device_ids=args.gpu if (len(args.gpu) < 2 or not args.use_dali) else args.gpu[0:-1])
     model = model.to(cuda_device)  # Sends model to device 0, other gpus are used automatically.
 
     check_and_prepare_parameters(model, args.training_focus)
