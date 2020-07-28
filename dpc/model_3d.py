@@ -101,7 +101,8 @@ class SkeleContrast(nn.Module):
     '''Module which performs contrastive learning by matching extracted feature
     vectors from the skele-motion skeleton representation and features extracted from RGB videos with a Resnet 18.'''
 
-    def __init__(self, img_dim, seq_len=30, network='resnet18', representation_size=1024, score_function="dot"):
+    def __init__(self, img_dim, seq_len=30, network='resnet18',
+                 representation_size=1024, score_function="dot", contrast_type="cross", debug=False):
         super(SkeleContrast, self).__init__()
         torch.cuda.manual_seed(233)
         print('Using SkeleContrast model.')
@@ -112,7 +113,12 @@ class SkeleContrast(nn.Module):
         self.last_size = int(math.ceil(img_dim / 32))
         # print('final feature map has size %dx%d' % (self.last_size, self.last_size))
 
+        self.contrast_type = contrast_type
+        self.debug = debug
+
         self.backbone, self.param = select_resnet(network, track_running_stats=False)
+        # torchvision.models.video.r2plus1d_18(pretrained=False, progress=True, **kwargs)
+
         self.param['num_layers'] = 1  # param for GRU
         self.param['hidden_size'] = self.param['feature_size']  # param for GRU
 
@@ -190,51 +196,67 @@ class SkeleContrast(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk, mem_rgb=None, mem_sk=None, debug=False):
-        if debug:
+    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_rnd=None, mem_sk_rnd=None):
+        # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
+        # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
+
+        if self.debug:
             assert not (torch.any(torch.isnan(block_rgb)) or torch.any(torch.isinf(block_rgb)))
             assert not (torch.any(torch.isnan(block_sk)) or torch.any(torch.isinf(block_sk)))
 
-            if mem_rgb is not None:
-                assert not (torch.any(torch.isnan(mem_rgb)) or torch.any(torch.isinf(mem_rgb)))
+            if mem_vid is not None:
+                assert not (torch.any(torch.isnan(mem_vid)) or torch.any(torch.isinf(mem_vid)))
                 assert not (torch.any(torch.isnan(mem_sk)) or torch.any(torch.isinf(mem_sk)))
 
         bs = block_rgb.shape[0]
 
-        pred_sk = self._forward_sk(block_sk)  # (B, N, D)
-        pred_rgb = self._forward_rgb(block_rgb)  # (B, N, D)
+        pred_rgb = self._forward_rgb(block_rgb)
+        pred_sk = self._forward_sk(block_sk)
 
         # The score is now calculated according to the other modality. for this we calculate the dot product of the feature vectors:
-        pred_rgb = pred_rgb.contiguous()  # .view(B*N, D)
-        pred_sk = pred_sk.contiguous()  # .view(B*N, D)
+        pred_rgb = pred_rgb.contiguous()
+        pred_sk = pred_sk.contiguous()
 
         pred_rgb = pred_rgb / torch.norm(pred_rgb, dim=1, keepdim=True)
         pred_sk = pred_sk / torch.norm(pred_sk, dim=1, keepdim=True)
 
-        if (mem_rgb is None):
+        if (mem_vid is None):
             # This uses batchwise contrast.
             score = SkeleContrast.pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
 
             targets = list(range(len(score)))
 
-            return score, torch.LongTensor(targets).to(block_rgb.device), None, None
+            return score, torch.LongTensor(targets).to(block_rgb.device), pred_rgb, pred_sk
         else:
-            score_x, score_y = SkeleContrast.memory_contrast_scores(x=pred_rgb, y=pred_sk, x_mem=mem_rgb, y_mem=mem_sk,
-                                                                    matching_fn=self.score_function)
+            score_rgb_to_sk, score_sk_to_rgb = SkeleContrast.memory_contrast_scores(x=pred_rgb, y=pred_sk,
+                                                                                    x_mem=mem_vid, y_mem=mem_sk,
+                                                                                    x_mem_rnd=mem_vid_rnd,
+                                                                                    y_mem_rnd=mem_sk_rnd,
+                                                                                    matching_fn=self.score_function,
+                                                                                    contrast_type=self.contrast_type)
 
-            score = torch.cat((score_x, score_y), dim=0)
+            # score = torch.cat((score_rgb_to_sk, score_sk_to_rgb), dim=0)
 
-            targets = torch.tensor(list(range(bs)) * 2)
+            targets_rgb_to_sk = torch.tensor(list(range(bs)))
+            targets_sk_to_rgb = torch.tensor(list(range(bs)))
 
-            return score, torch.LongTensor(targets).to(block_rgb.device), pred_sk, pred_rgb
+            targets_rgb_to_sk = torch.LongTensor(targets_rgb_to_sk).to(block_rgb.device)
+            targets_sk_to_rgb = torch.LongTensor(targets_sk_to_rgb).to(block_rgb.device)
+
+            return {"rgb_to_sk": score_sk_to_rgb, "sk_to_rgb": score_rgb_to_sk}, \
+                   {"rgb_to_sk": targets_rgb_to_sk, "sk_to_rgb": targets_sk_to_rgb}, pred_rgb, pred_sk
 
     @staticmethod
     def memory_contrast_scores(x: torch.Tensor,
                                y: torch.Tensor,
                                x_mem: torch.Tensor,
                                y_mem: torch.Tensor,
+                               x_mem_rnd: torch.Tensor,
+                               y_mem_rnd: torch.Tensor,
                                matching_fn: str,
-                               temp_tao=0.1) -> (torch.Tensor, torch.Tensor):
+                               use_current_contrast=True,
+                               temp_tao=0.1,
+                               contrast_type="cross") -> (torch.Tensor, torch.Tensor):
         if matching_fn == "cos-nt-xent":
             # Implement memory contrast
             # We always set the first vector to be the ground truth.
@@ -243,12 +265,25 @@ class SkeleContrast(nn.Module):
             results_y = []
 
             batch_size = x.shape[0]
+
+            if use_current_contrast:
+                x_mem = torch.cat((x, x_mem_rnd))
+                y_mem = torch.cat((y, y_mem_rnd))
+            else:
+                x_mem = torch.cat((x_mem, x_mem_rnd))
+                y_mem = torch.cat((y_mem, y_mem_rnd))
+
             for i in range(batch_size):
                 # The scores are calculated between the output of one modality and the output
                 # of the other modality. The first vectors are the ground truth (other modality).
-
-                scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
-                scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
+                if contrast_type == "cross":
+                    scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
+                    scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
+                elif contrast_type == "self":
+                    scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
+                    scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
+                else:
+                    raise ValueError
 
                 results_x.append(scores_x_i)
                 results_y.append(scores_y_i)

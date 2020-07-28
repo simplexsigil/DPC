@@ -1,5 +1,6 @@
 import argparse
 import sys
+from collections import deque
 
 import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
@@ -29,7 +30,6 @@ import torchvision.utils as vutils
 # This way, cuda optimizes for the hardware available, if input size is always equal.
 torch.backends.cudnn.benchmark = True
 
-global start_time
 global stop_time
 global cuda_device
 global criterion
@@ -41,8 +41,8 @@ global args
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
-parser.add_argument('--epochs', default=300, type=int, help='number of total epochs to run')
-parser.add_argument('--dataset', default='kinetics400', type=str)
+parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
+parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
 parser.add_argument('--rgb_net', default='resnet18', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
@@ -61,8 +61,14 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
-parser.add_argument('--memory_contrast', default=None, type=int, help='Number of contrast vectors. '
-                                                                      'Batch contrast is used if not applied.')
+parser.add_argument('--memory_contrast', default=None, type=int,
+                    help='Number of contrast vectors. Batch contrast is used if not applied.')
+parser.add_argument('--memory_update_rate', default=0.7, type=float,
+                    help='Update rate for the exponentially moving average of the representation memory.')
+parser.add_argument('--prox_reg_multiplier', default=None, type=float,
+                    help='Update rate for the exponentially moving average of the representation memory.')
+parser.add_argument('--contrast_type', default="cross", type=str, choices=["cross", "self"],
+                    help='If contrastive learning is done acording to other or on own representation.')
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
@@ -112,6 +118,8 @@ def argument_checks(args):
     assert args.batch_size % calc_gpus == 0, "Batch size has to be divisible by GPU count. DALI reduces GPUs by one."
     assert args.loader_workers >= 0
     assert args.dali_workers >= 1, "Minimum 1"
+    assert not (args.memory_contrast is None and args.contrast_type == "self"), \
+        "Self contrast without memory representations makes no sense."
 
     if not args.use_dali:  # For a cleaner printout of settings.
         args.dali_prefetch_queue = None
@@ -134,8 +142,8 @@ def main():
     augmentation_settings = {
         "rot_range":      (-30, 30),
         "hue_range":      (-180, 180),
-        "sat_range":      (0.0, 1.5),
-        "val_range":      (0.5, 1.5),
+        "sat_range":      (0.5, 1.5),
+        "val_range":      (0.7, 1.3),
         "hue_prob":       1.,
         "crop_arr_range": (0.15, 1.)
         }
@@ -200,12 +208,13 @@ def main():
     val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
 
     training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, img_path,
-                  args.memory_contrast, best_acc)
+                  args.memory_contrast, best_acc, representation_size=args.representation_size)
 
 
 def training_loop(model, optimizer, train_loader, val_loader, writer_train, writer_val, model_path, img_path,
-                  memory_contrast_size=None, best_acc=0.0, best_epoch=0, representation_size=512):
+                  memory_contrast_size=None, best_acc=0.0, best_epoch=0, representation_size=128):
     memories = None
+    mem_queue = None
     if memory_contrast_size is not None:
         # torch.autograd.set_detect_anomaly(True)
 
@@ -222,12 +231,30 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
         vid_norms = torch.norm(memories["video"], dim=1, keepdim=True)
         memories["video"] = memories["video"] / vid_norms
 
+        mem_queue = deque(maxlen=memory_contrast_size * len(args.gpu) - args.batch_size)
+
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        plot_angle_distribution(memories["skeleton"], memories["video"], epoch, img_path)
+        if memories is not None:
+            plot_angle_distribution(memories["skeleton"], memories["video"], epoch, img_path)
 
-        train_loss, train_acc, train_accuracy_list = train_two_stream_contrastive(train_loader, model, optimizer, epoch,
-                                                                                  memories, memory_contrast_size, args)
+        if args.memory_contrast is None:
+            training_method = "batch_contrast"
+        else:
+            training_method = "memory_contrast"
+
+        if training_method == "batch_contrast":
+            train_loss, train_acc, train_accuracy_list = train_skvid_batch_contrast(train_loader, model, optimizer,
+                                                                                    epoch,
+                                                                                    args)
+        elif training_method == "memory_contrast":
+            train_loss, train_acc, train_accuracy_list = train_skvid_mem_contrast(train_loader, model, optimizer,
+                                                                                  epoch,
+                                                                                  memories, mem_queue,
+                                                                                  args.memory_contrast,
+                                                                                  args)
+
+            mem_queue.clear()
 
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
@@ -236,13 +263,9 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
             val_loader.reset()
 
         # save curve
-        writer_train.add_scalar('global/loss', train_loss, epoch)
-        writer_train.add_scalar('global/accuracy', train_acc, epoch)
         writer_val.add_scalar('global/loss', val_loss, epoch)
         writer_val.add_scalar('global/accuracy', val_acc, epoch)
-        writer_train.add_scalar('accuracy/top1', train_accuracy_list[0], epoch)
-        writer_train.add_scalar('accuracy/top3', train_accuracy_list[1], epoch)
-        writer_train.add_scalar('accuracy/top5', train_accuracy_list[2], epoch)
+
         writer_val.add_scalar('accuracy/top1', val_accuracy_list[0], epoch)
         writer_val.add_scalar('accuracy/top3', val_accuracy_list[1], epoch)
         writer_val.add_scalar('accuracy/top5', val_accuracy_list[2], epoch)
@@ -270,6 +293,414 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
+def queued_memories(memories: dict, bat_idxs: torch.Tensor, count: int, mem_queue: deque):
+    assert len(bat_idxs) + len(mem_queue) <= count
+
+    cont_idxs = list(mem_queue)
+    mem_queue.extend(bat_idxs.tolist())
+
+    return memories["video"][bat_idxs], memories["skeleton"][bat_idxs], \
+           memories["video"][cont_idxs], memories["skeleton"][cont_idxs]
+
+
+def random_memories(memories: dict, bat_idxs: torch.Tensor, count: int):
+    memory_count = memories["video"].shape[0]
+
+    perm = list(range(memory_count))
+    bat_idxs_lst = sorted(bat_idxs.tolist(), reverse=True)
+    for bat_idx in bat_idxs_lst:
+        perm.pop(bat_idx)
+
+    random.shuffle(perm)
+
+    rand_idxs = torch.tensor(perm[:count - len(bat_idxs)])
+
+    return memories["video"][bat_idxs], memories["skeleton"][bat_idxs], \
+           memories["video"][rand_idxs], memories["skeleton"][rand_idxs]
+
+
+def write_out_images(img_seq, writer):
+    if img_seq.shape[0] > 2:
+        out_seq = img_seq[0:2, :]
+    else:
+        out_seq = img_seq
+
+    writer.add_image('input_seq',
+                     de_normalize(vutils.make_grid(
+                         out_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim, args.img_dim),
+                         nrow=args.seq_len)),
+                     iteration)
+
+
+def train_skvid_batch_contrast(data_loader, model, optimizer, epoch, args=None):
+    global iteration
+
+    tr_stats = {"time_data_loading":  AverageMeter(locality=args.print_freq),
+                "time_cuda_transfer": AverageMeter(locality=args.print_freq),
+                "time_forward":       AverageMeter(locality=args.print_freq),
+                "time_backward":      AverageMeter(locality=args.print_freq),
+                "loss":               AverageMeter(locality=args.print_freq),
+                "cross_view_sim":     AverageMeter(locality=args.print_freq),
+                "accuracy":           {"top1": AverageMeter(locality=args.print_freq),
+                                       "top3": AverageMeter(locality=args.print_freq),
+                                       "top5": AverageMeter(locality=args.print_freq)},
+
+                }
+
+    model.train()
+
+    tic = time.perf_counter()
+    start_time = time.perf_counter()
+
+    for idx, out in enumerate(data_loader):
+        bat_idxs, vid_seq, sk_seq = out
+
+        batch_size = vid_seq.size(0)
+
+        tr_stats["time_data_loading"].update(time.perf_counter() - start_time)
+
+        # Visualize images for tensorboard on two iterations.
+        if (iteration == 0) or (iteration == args.print_freq):
+            write_out_images(vid_seq, writer_train)
+
+        # Cuda Transfer
+        start_time = time.perf_counter()
+
+        vid_seq = vid_seq.to(cuda_device)
+        sk_seq = sk_seq.to(cuda_device)
+
+        tr_stats["time_cuda_transfer"].update(time.perf_counter() - start_time)
+
+        # Forward pass: Calculation
+        start_time = time.perf_counter()
+
+        score, targets, repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None)
+
+        targets = targets.detach()
+
+        tr_stats["time_forward"].update(time.perf_counter() - start_time)
+
+        # Average distance of representations
+        cross_view_sim = torch.mean(torch.sum(repr_vid * repr_sk, dim=1), dim=0)
+
+        tr_stats["cross_view_sim"].update(cross_view_sim.item(), batch_size)
+
+        # Calculate Accuracies
+        top1, top3, top5 = calc_topk_accuracy(score, targets, (1, 3, 5))
+
+        tr_stats["accuracy"]["top1"].update(top1.item(), batch_size)
+        tr_stats["accuracy"]["top3"].update(top3.item(), batch_size)
+        tr_stats["accuracy"]["top5"].update(top5.item(), batch_size)
+
+        # Loss Calculation and backward pass.
+        start_time = time.perf_counter()
+
+        loss = criterion(score, targets)
+
+        tr_stats["loss"].update(loss.item(), batch_size)
+
+        optimizer.zero_grad()
+        loss.backward()
+
+        optimizer.step()
+
+        tr_stats["time_backward"].update(time.perf_counter() - start_time)
+
+        if idx % args.print_freq == 0:
+            print_tr_stats_iteration_batch_contrast(tr_stats, epoch, idx, len(data_loader), time.perf_counter() - tic)
+
+        iteration += 1
+        write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration)
+
+        start_time = time.perf_counter()
+        tic = time.perf_counter()
+        # Next iteration
+
+    write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch)
+    print_stats_timings_batch_contrast(tr_stats)
+
+    accuracies = [tr_stats["accuracy"]["top1"].val, tr_stats["accuracy"]["top3"].val, tr_stats["accuracy"]["top5"].val]
+
+    return tr_stats["loss"].val, accuracies[0], accuracies
+
+
+def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem_queue, memory_contrast_size=None,
+                             args=None):
+    global iteration
+
+    tr_stats = {"time_data_loading":     AverageMeter(locality=args.print_freq),
+                "time_cuda_transfer":    AverageMeter(locality=args.print_freq),
+                "time_memory_selection": AverageMeter(locality=args.print_freq),
+                "time_memory_update":    AverageMeter(locality=args.print_freq),
+                "time_forward":          AverageMeter(locality=args.print_freq),
+                "time_backward":         AverageMeter(locality=args.print_freq),
+                "total_loss":            AverageMeter(locality=args.print_freq),
+                "sk_loss":               AverageMeter(locality=args.print_freq),
+                "vid_loss":              AverageMeter(locality=args.print_freq),
+                "cross_view_sim":        AverageMeter(locality=args.print_freq),
+                "sk_prox_reg_sim":       AverageMeter(locality=args.print_freq),
+                "vid_prox_reg_sim":      AverageMeter(locality=args.print_freq),
+                "prox_reg_loss":         AverageMeter(locality=args.print_freq),
+                "accuracy_sk":           {"top1": AverageMeter(locality=args.print_freq),
+                                          "top3": AverageMeter(locality=args.print_freq),
+                                          "top5": AverageMeter(locality=args.print_freq)},
+                "accuracy_rgb":          {"top1": AverageMeter(locality=args.print_freq),
+                                          "top3": AverageMeter(locality=args.print_freq),
+                                          "top5": AverageMeter(locality=args.print_freq)},
+                }
+
+    alph = args.memory_update_rate
+    delta = args.prox_reg_multiplier
+
+    model.train()
+
+    tic = time.perf_counter()
+    start_time = time.perf_counter()
+
+    for idx, out in enumerate(data_loader):
+        bat_idxs, vid_seq, sk_seq = out
+
+        batch_size = vid_seq.size(0)
+
+        tr_stats["time_data_loading"].update(time.perf_counter() - start_time)
+
+        # Visualize images for tensorboard on two iterations.
+        if (iteration == 0) or (iteration == args.print_freq):
+            write_out_images(vid_seq, writer_train)
+
+        # Memory selection.
+        start_time = time.perf_counter()
+
+        mem_vid, mem_sk, mem_vid_cont, mem_sk_cont = queued_memories(memories, bat_idxs,
+                                                                     memory_contrast_size * len(args.gpu), mem_queue)
+
+        tr_stats["time_memory_selection"].update(time.perf_counter() - start_time)
+
+        # Cuda Transfer
+        start_time = time.perf_counter()
+
+        vid_seq = vid_seq.to(cuda_device)
+        sk_seq = sk_seq.to(cuda_device)
+
+        mem_vid.to(cuda_device)
+        mem_sk.to(cuda_device)
+        mem_vid_cont.to(cuda_device)
+        mem_sk_cont.to(cuda_device)
+
+        tr_stats["time_cuda_transfer"].update(time.perf_counter() - start_time)
+
+        # Forward pass: Calculation
+        start_time = time.perf_counter()
+
+        score, targets, mem_vid, mem_sk = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont)
+
+        # Forward pass: Unpack results
+        score_sk_to_rgb = score["sk_to_rgb"]
+        score_rgb_to_sk = score["rgb_to_sk"]
+
+        targets_sk = targets["sk_to_rgb"]
+        targets_rgb = targets["rgb_to_sk"]
+
+        targets_sk = targets_sk.detach()
+        targets_rgb = targets_rgb.detach()
+
+        tr_stats["time_forward"].update(time.perf_counter() - start_time)
+
+        # Memory update and statistics.
+        start_time = time.perf_counter()
+
+        mem_sk_old = memories["skeleton"][bat_idxs]
+        mem_rgb_old = memories["video"][bat_idxs]
+
+        # Average distance of representations
+        cross_view_sim = torch.mean(torch.sum(mem_vid * mem_sk, dim=1), dim=0)
+        sk_prox_reg_sim = torch.mean(torch.sum(mem_sk * mem_sk_old.to(mem_sk.device), dim=1), dim=0)
+        rgb_prox_reg_sim = torch.mean(torch.sum(mem_vid * mem_rgb_old.to(mem_vid.device), dim=1), dim=0)
+
+        tr_stats["cross_view_sim"].update(cross_view_sim.item(), batch_size)
+        tr_stats["sk_prox_reg_sim"].update(sk_prox_reg_sim.item(), batch_size)
+        tr_stats["vid_prox_reg_sim"].update(rgb_prox_reg_sim.item(), batch_size)
+
+        if delta is not None:
+            sk_prox_reg_dist = torch.mean(torch.norm(mem_sk - mem_sk_old.to(mem_sk.device), dim=1), dim=0)
+            rgb_prox_reg_dist = torch.mean(torch.norm(mem_vid - mem_rgb_old.to(mem_vid.device), dim=1), dim=0)
+
+            prox_reg_loss = delta * (torch.mean(torch.stack([sk_prox_reg_dist, rgb_prox_reg_dist])))
+            tr_stats["prox_reg_loss"].update(prox_reg_loss.item(), batch_size)
+        else:
+            tr_stats["prox_reg_loss"].update(None, batch_size)
+            prox_reg_loss = None
+
+        mem_sk_new = alph * mem_sk.clone().detach().cpu() + (1. - alph) * mem_sk_old
+        mem_sk_new.requires_grad = False
+
+        mem_rgb_new = alph * mem_vid.clone().detach().cpu() + (1. - alph) * mem_rgb_old
+        mem_rgb_new.requires_grad = False
+
+        memories["skeleton"][bat_idxs] = mem_sk_new
+        memories["video"][bat_idxs] = mem_rgb_new
+
+        tr_stats["time_memory_update"].update(time.perf_counter() - start_time)
+
+        # Calculate Accuracies
+        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb, (1, 3, 5))
+        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk, (1, 3, 5))
+
+        tr_stats["accuracy_sk"]["top1"].update(top1_sk.item(), batch_size)
+        tr_stats["accuracy_sk"]["top3"].update(top3_sk.item(), batch_size)
+        tr_stats["accuracy_sk"]["top5"].update(top5_sk.item(), batch_size)
+
+        tr_stats["accuracy_rgb"]["top1"].update(top1_rgb.item(), batch_size)
+        tr_stats["accuracy_rgb"]["top3"].update(top3_rgb.item(), batch_size)
+        tr_stats["accuracy_rgb"]["top5"].update(top5_rgb.item(), batch_size)
+
+        # Loss Calculation and backward pass.
+        start_time = time.perf_counter()
+
+        loss_rgb = criterion(score_rgb_to_sk, targets_rgb)
+        loss_sk = criterion(score_sk_to_rgb, targets_sk)
+
+        total_loss = torch.mean(torch.stack([loss_sk, loss_rgb])) if prox_reg_loss is None else torch.mean(
+            torch.stack([loss_sk, loss_rgb, prox_reg_loss]))
+
+        tr_stats["vid_loss"].update(loss_rgb.item(), batch_size)
+        tr_stats["sk_loss"].update(loss_sk.item(), batch_size)
+        tr_stats["total_loss"].update(total_loss.item(), batch_size)
+
+        optimizer.zero_grad()
+        total_loss.backward()
+
+        optimizer.step()
+
+        tr_stats["time_backward"].update(time.perf_counter() - start_time)
+
+        if idx % args.print_freq == 0:
+            print_tr_stats_iteration_mem_contrast(tr_stats, epoch, idx, len(data_loader), time.perf_counter() - tic)
+
+        iteration += 1
+        write_stats_mem_contrast_iteration(tr_stats, writer_train, iteration)
+
+        start_time = time.perf_counter()
+        tic = time.perf_counter()
+        # Next iteration
+
+    write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch)
+    print_stats_timings_mem_contrast(tr_stats)
+
+    avg_acc = (tr_stats["accuracy_sk"]["top1"].val + tr_stats["accuracy_rgb"]["top1"].val) / 2.
+
+    return tr_stats["total_loss"].val, avg_acc, [0, 0, 0]
+
+
+def write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch):
+    # save curve
+    writer_train.add_scalar('training_loss', tr_stats["loss"].val, epoch)
+
+    writer_train.add_scalars('training_accuracies', {'top1': tr_stats["accuracy"]["top1"].val,
+                                                     'top3': tr_stats["accuracy"]["top3"].val,
+                                                     'top5': tr_stats["accuracy"]["top5"].val}, epoch)
+
+    writer_train.add_scalar('representation_similarity', tr_stats["cross_view_sim"].val, epoch)
+
+
+def write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch):
+    # save curves
+    avg_acc = (tr_stats["accuracy_sk"]["top1"].val + tr_stats["accuracy_rgb"]["top1"].val) / 2.
+
+    losses_dict = {'loss':           tr_stats["total_loss"].val,
+                   'loss_vid_to_sk': tr_stats["vid_loss"].val,
+                   'loss_sk_to_vid': tr_stats["sk_loss"].val}
+
+    if args.prox_reg_multiplier:
+        losses_dict['loss_prox_reg'] = tr_stats["prox_reg_loss"].val
+
+    writer_train.add_scalars('training_losses', losses_dict, epoch)
+
+    writer_train.add_scalars('vid_to_sk_accuracy', {'top1': tr_stats["accuracy_rgb"]["top1"].val,
+                                                    'top3': tr_stats["accuracy_rgb"]["top3"].val,
+                                                    'top5': tr_stats["accuracy_rgb"]["top5"].val}, epoch)
+
+    writer_train.add_scalars('sk_to_vid_accuracy', {'top1': tr_stats["accuracy_sk"]["top1"].val,
+                                                    'top3': tr_stats["accuracy_sk"]["top3"].val,
+                                                    'top5': tr_stats["accuracy_sk"]["top5"].val}, epoch)
+
+    writer_train.add_scalars('representation_similarities', {'cross_view': tr_stats["cross_view_sim"].val,
+                                                             'vid_to_mem': tr_stats["vid_prox_reg_sim"].val,
+                                                             'sk_to_mem':  tr_stats["sk_prox_reg_sim"].val}, epoch)
+
+
+def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
+    pass
+    # writer_train.add_scalar('iterations/loss_rgb', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/loss_sk', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/total_loss', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/accuracy_sk', tr_stats["accuracy_sk"]["top1"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/accuracy_rgb', tr_stats["accuracy_rgb"]["top1"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/sk_prox_reg_sim', tr_stats["sk_prox_reg_sim"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/vid_prox_reg_sim', tr_stats["vid_prox_reg_sim"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/cross_view_dist', tr_stats["cross_view_sim"].local_avg, iteration)
+
+
+def write_stats_mem_contrast_iteration(tr_stats, writer_train, iteration):
+    pass
+    # writer_train.add_scalar('iterations/loss_rgb', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/loss_sk', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/total_loss', tr_stats["total_loss"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/accuracy_sk', tr_stats["accuracy_sk"]["top1"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/accuracy_rgb', tr_stats["accuracy_rgb"]["top1"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/sk_prox_reg_sim', tr_stats["sk_prox_reg_sim"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/vid_prox_reg_sim', tr_stats["vid_prox_reg_sim"].local_avg, iteration)
+    # writer_train.add_scalar('iterations/cross_view_dist', tr_stats["cross_view_sim"].local_avg, iteration)
+
+
+def print_stats_timings_batch_contrast(tr_stats):
+    print(
+        f'Data Loading: {tr_stats["time_data_loading"].val:.4f}s | '
+        f'Cuda Transfer: {tr_stats["time_cuda_transfer"].val:.4f}s | '
+        f'Forward: {tr_stats["time_forward"].val:.4f}s | '
+        f'Backward: {tr_stats["time_backward"].val:.4f}s')
+
+
+def print_stats_timings_mem_contrast(tr_stats):
+    print(
+        f'Data Loading: {tr_stats["time_data_loading"].val:.4f}s | '
+        f'Cuda Transfer: {tr_stats["time_cuda_transfer"].val:.4f}s | '
+        f'Memory Selection: {tr_stats["time_memory_selection"].val:.4f}s | '
+        f'Forward: {tr_stats["time_forward"].val:.4f}s | '
+        f'Backward: {tr_stats["time_backward"].val:.4f}s | '
+        f'Memory Update: {tr_stats["time_memory_update"].val:.4f}s')
+
+
+def print_tr_stats_iteration_batch_contrast(stats: dict, epoch, idx, batch_count, duration):
+    print(f'Epoch: [{epoch}][{idx}/{batch_count}]\t '
+          f'Loss {stats["loss"].local_avg:.6f} '
+          '\tAcc: '
+          f'top1 {stats["accuracy"]["top1"].local_avg:.4f} | '
+          f'top3 {stats["accuracy"]["top3"].local_avg:.4f} | '
+          f'top5 {stats["accuracy"]["top5"].local_avg:.4f} '
+          f'Sim: {stats["cross_view_sim"].local_avg:.4f} '
+          f'T:{duration:.2f}\n'
+          )
+
+
+def print_tr_stats_iteration_mem_contrast(stats: dict, epoch, idx, batch_count, duration):
+    prox_reg_str = f'Prox Reg {stats["prox_reg_loss"].local_avg:.2f} ' if stats["prox_reg_loss"].val is not None else ''
+
+    print(f'Epoch: [{epoch}][{idx}/{batch_count}]\t '
+          f'Losses Total {stats["total_loss"].local_avg:.6f} '
+          f'SK {stats["sk_loss"].local_avg:.2f} '
+          f'Vid {stats["vid_loss"].local_avg:.2f} ' + prox_reg_str +
+          '\tSk-RGB RGB-Sk Acc: '
+          f'top1 {stats["accuracy_sk"]["top1"].local_avg:.4f} {stats["accuracy_rgb"]["top1"].local_avg:.4f} | '
+          f'top3 {stats["accuracy_sk"]["top3"].local_avg:.4f} {stats["accuracy_rgb"]["top3"].local_avg:.4f} | '
+          f'top5 {stats["accuracy_sk"]["top5"].local_avg:.4f} {stats["accuracy_rgb"]["top5"].local_avg:.4f} | '
+          f'T:{duration:.2f}\n'
+          '                     '  # For alignment 
+          f'Cross View Sim {stats["cross_view_sim"].local_avg:.3f} | '
+          f'SK Prox Sim {stats["sk_prox_reg_sim"].local_avg:.3f} | '
+          f'RGB Prox Sim {stats["vid_prox_reg_sim"].local_avg:.3f}\n')
+
+
 def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=None, memory_contrast_size=None,
                                  args=None):
     data_loading_times = []
@@ -278,11 +709,12 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
     memory_update_times = []
     calculation_times = []
     losses = AverageMeter()
+    prox_reg_losses = AverageMeter()
     accuracy = AverageMeter()
-    accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]
+    accuracy_list_sk = [AverageMeter(), AverageMeter(), AverageMeter()]
+    accuracy_list_rgb = [AverageMeter(), AverageMeter(), AverageMeter()]
     model.train()
     global iteration
-    global start_time
     global stop_time
 
     start_time = time.perf_counter()
@@ -337,7 +769,10 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
 
         start_time = time.perf_counter()
 
-        score, targets, mem_sk, mem_rgb = model(input_seq, sk_seq, mem_rgb, mem_sk)
+        if memories is not None:
+            score, targets, mem_rgb, mem_sk = model(input_seq, sk_seq, mem_rgb, mem_sk)
+        else:
+            score, targets = model(input_seq, sk_seq, mem_rgb, mem_sk)
 
         # visualize
         if (iteration == 0) or (
@@ -349,38 +784,24 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
                                        nrow=args.seq_len)),
                                    iteration)
         # del input_seq, sk_seq
-        targets_detached = targets.detach()  # It's the diagonals.
-
-        loss = criterion(score, targets_detached)
-
-        top1, top3, top5 = calc_topk_accuracy(score, targets_detached, (1, 3, 5))
-
-        accuracy_list[0].update(top1.item(), batch_size)
-        accuracy_list[1].update(top3.item(), batch_size)
-        accuracy_list[2].update(top5.item(), batch_size)
-
-        losses.update(loss.item(), batch_size)
-        accuracy.update(top1.item(), batch_size)
-
-        optimizer.zero_grad()
-        loss.backward()
-
-        optimizer.step()
-
-        # del score, targets_detached, loss
-
-        stop_time = time.perf_counter()
-
-        calculation_times.append(stop_time - start_time)
 
         start_time = time.perf_counter()
 
         if mem_sk is not None:
-            a = 0.1
-            mem_sk_new = a * mem_sk.clone().detach().cpu() + (1. - a) * memories["skeleton"][bat_idxs]
+            a = 1
+
+            mem_sk_old = memories["skeleton"][bat_idxs]
+            mem_rgb_old = memories["video"][bat_idxs]
+
+            prox_reg_score_sk = torch.norm(mem_sk - mem_sk_old.to(mem_sk.device), dim=1)
+            prox_reg_score_rgb = torch.norm(mem_rgb - mem_rgb_old.to(mem_rgb.device), dim=1)
+
+            prox_reg_loss = 5 * (torch.mean(torch.cat([prox_reg_score_sk, prox_reg_score_rgb])))
+
+            mem_sk_new = a * mem_sk.clone().detach().cpu() + (1. - a) * mem_sk_old
             mem_sk_new.requires_grad = False
 
-            mem_rgb_new = a * mem_rgb.clone().detach().cpu() + (1. - a) * memories["video"][bat_idxs]
+            mem_rgb_new = a * mem_rgb.clone().detach().cpu() + (1. - a) * mem_rgb_old
             mem_rgb_new.requires_grad = False
 
             memories["skeleton"][bat_idxs] = mem_sk_new
@@ -392,11 +813,56 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
 
         memory_update_times.append(stop_time - start_time)
 
+        if memories is not None:
+            score_sk_to_rgb = score["sk_to_rgb"]
+            score_rgb_to_sk = score["rgb_to_sk"]
+
+            targets_sk = targets["sk_to_rgb"]
+            targets_rgb = targets["rgb_to_sk"]
+
+            targets_sk = targets_sk.detach()
+            targets_rgb = targets_rgb.detach()
+        else:
+            pass
+
+        # targets_detached = targets.detach()  # It's the diagonals.
+
+        loss_sk = criterion(score_sk_to_rgb, targets_sk)
+        loss_rgb = criterion(score_rgb_to_sk, targets_rgb)
+
+        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk, (1, 3, 5))
+        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb, (1, 3, 5))
+
+        accuracy_list_sk[0].update(top1_sk.item(), batch_size)
+        accuracy_list_sk[1].update(top3_sk.item(), batch_size)
+        accuracy_list_sk[2].update(top5_sk.item(), batch_size)
+
+        accuracy_list_rgb[0].update(top1_rgb.item(), batch_size)
+        accuracy_list_rgb[1].update(top3_rgb.item(), batch_size)
+        accuracy_list_rgb[2].update(top5_rgb.item(), batch_size)
+
+        losses.update(loss_sk.item() + loss_rgb.item(), batch_size)
+        prox_reg_losses.update(prox_reg_loss.item(), batch_size)
+        accuracy.update((top1_sk.item() + top1_rgb.item()) / 2, batch_size)
+
+        optimizer.zero_grad()
+        loss = loss_sk + loss_rgb + prox_reg_loss
+        loss.backward()
+
+        optimizer.step()
+
+        # del score, targets_detached, loss
+
+        stop_time = time.perf_counter()
+
+        calculation_times.append(stop_time - start_time)
+
         if idx % args.print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
-                  'Loss {loss.val:.6f} ({loss.local_avg:.4f})\t'
-                  'Acc: top1 {3:.4f}; top3 {4:.4f}; top5 {5:.4f} T:{6:.2f}\t'.format(
-                epoch, idx, len(data_loader), top1, top3, top5, time.time() - tic, loss=losses))
+                  'Loss {loss.val:.6f} (Prox Reg {prox_loss.val:.6f})\t'
+                  'Sk-RGB RGB-Sk Acc: top1 {3:.4f} {4:.4f} | top3 {5:.4f} {6:.4f} | top5 {7:.4f} {8:.4f} | T:{9:.2f}\t'.format(
+                epoch, idx, len(data_loader), top1_sk, top1_rgb, top3_sk, top3_rgb, top5_sk, top5_rgb,
+                time.time() - tic, loss=losses, prox_loss=prox_reg_losses))
 
             writer_train.add_scalar('local/loss', losses.val, iteration)
             writer_train.add_scalar('local/accuracy', accuracy.val, iteration)
@@ -411,7 +877,7 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
         sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
         sum(memory_selection_times) / len(memory_selection_times), sum(calculation_times) / len(calculation_times),
         sum(memory_update_times) / len(memory_update_times)))
-    return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list]
+    return losses.local_avg, accuracy.local_avg, [i.local_avg for i in accuracy_list_sk]
 
 
 def validate(data_loader, model, epoch):
@@ -480,7 +946,8 @@ def select_and_prepare_model(model_name):
                               seq_len=args.seq_len,
                               network=args.rgb_net,
                               representation_size=args.representation_size,
-                              score_function=args.score_function)
+                              score_function=args.score_function,
+                              contrast_type=args.contrast_type)
     else:
         raise ValueError('wrong model!')
 
@@ -655,9 +1122,8 @@ def set_path(args, mode="training"):
 
 
 def get_summary_writers(args):
-    time_str = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-    tboard_str = '{time}-{mode}-{args.prefix}-m={args.model}-bs={args.batch_size}-sl={args.seq_len}-img={args.img_dim}-' \
-                 'ds={args.ds}-rgb_net={args.rgb_net}-rs={args.representation_size}'
+    time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    tboard_str = '{time}-{mode}-{args.prefix}'
     val_name = tboard_str.format(args=args, mode="val", time=time_str)
     train_name = tboard_str.format(args=args, mode="train", time=time_str)
 
@@ -667,6 +1133,8 @@ def get_summary_writers(args):
     except:  # v1.7
         writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
         writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
+
+    print(f"\n### Tensorboard Path###\n{img_path}\n")
 
     return writer_train, writer_val
 
@@ -703,7 +1171,8 @@ def rand_self_cos_similarities(x, samples=1000):
     return angles
 
 
-def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tensor, epoch: int, base_path="."):
+def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tensor, epoch: int, base_path=".",
+                            fraction=0.2):
     # matplotlib.use('module://backend_interagg')
     import matplotlib.pyplot as plt
 
@@ -711,11 +1180,11 @@ def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tenso
 
     if not os.path.exists(img_path):
         os.makedirs(img_path)
-
-    mem_sk_beg_angles = rand_self_cos_similarities(memories_sk[:1000])
-    mem_sk_end_angles = rand_self_cos_similarities(memories_sk[:-1000])
-    mem_rgb_start_angles = rand_self_cos_similarities(memories_rgb[:1000])
-    mem_rgb_end_angles = rand_self_cos_similarities(memories_rgb[:-1000])
+    frac_count = int(math.floor(fraction * len(memories_sk)))
+    mem_sk_beg_angles = rand_self_cos_similarities(memories_sk[:frac_count])
+    mem_sk_end_angles = rand_self_cos_similarities(memories_sk[-frac_count:])
+    mem_rgb_start_angles = rand_self_cos_similarities(memories_rgb[:frac_count])
+    mem_rgb_end_angles = rand_self_cos_similarities(memories_rgb[-frac_count:])
 
     angle_dict = {"Skeleton Memory Head Angles": mem_sk_beg_angles,
                   "RGB Memory Head Angles":      mem_rgb_start_angles,
@@ -729,7 +1198,7 @@ def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tenso
         idx_1 = idx // 2
         idx_2 = idx % 2
         ax = axs[idx_1, idx_2]
-        ax.hist(angles, 100, facecolor='b', density=True, alpha=0.75)
+        ax.hist(angles, 100, facecolor='b', alpha=0.75)
 
         ax.set_title(name)
 
@@ -740,7 +1209,10 @@ def plot_angle_distribution(memories_sk: torch.Tensor, memories_rgb: torch.Tenso
         ax.set_xlim(-1.1, 1.1)
         ax.grid(True)
 
-    fig.savefig(os.path.join(img_path, 'angle_distribution_ep{}.png'.format(epoch)))
+    fig.suptitle("Epoch {}".format(epoch))
+
+    fig.savefig(os.path.join(img_path, 'angle_distribution_ep{:04d}.png'.format(epoch)))
+    plt.close(fig)
 
 
 if __name__ == '__main__':

@@ -84,7 +84,8 @@ def denorm(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
 class AverageMeter(object):
     """Computes and stores the average and current value"""
 
-    def __init__(self):
+    def __init__(self, locality=5):
+        self.locality = locality
         self.reset()
 
     def reset(self):
@@ -98,16 +99,20 @@ class AverageMeter(object):
         self.dict = {}  # save all data values here
         self.save_dict = {}  # save mean and std here, for summary table
 
-    def update(self, val, n=1, history=0, step=5):
+    def update(self, val, n=1, history=0):
+        if val is None:
+            self.val = None
+            return
+
         self.val = val
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
         if history:
             self.history.append(val)
-        if step > 0:
+        if self.locality > 0:
             self.local_history.append(val)
-            if len(self.local_history) > step:
+            if len(self.local_history) > self.locality:
                 self.local_history.popleft()
             self.local_avg = np.average(self.local_history)
 
