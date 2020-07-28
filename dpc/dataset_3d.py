@@ -465,7 +465,7 @@ class Kinetics400_full_3d(data.Dataset):
                  sample_limit=None,
                  use_cache=False,
                  cache_folder="cache",
-                 sample_mid_seq=True):
+                 sample_mid_seq=False):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
