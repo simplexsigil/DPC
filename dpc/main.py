@@ -58,12 +58,12 @@ parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
+parser.add_argument('--print_freq', default=10, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--memory_contrast', default=None, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
-parser.add_argument('--memory_update_rate', default=0.7, type=float,
+parser.add_argument('--memory_update_rate', default=1, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
 parser.add_argument('--prox_reg_multiplier', default=None, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
@@ -72,7 +72,7 @@ parser.add_argument('--contrast_type', default="cross", type=str, choices=["cros
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
-parser.add_argument('--loader_workers', default=16, type=int,
+parser.add_argument('--loader_workers', default=32, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 parser.add_argument('--dali_workers', default=16, type=int,
                     help='Number of dali workers to pre load batch data. At least 1 worker is necessary.')
