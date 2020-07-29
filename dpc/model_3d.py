@@ -196,7 +196,7 @@ class SkeleContrast(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_rnd=None, mem_sk_rnd=None):
+    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
@@ -230,15 +230,19 @@ class SkeleContrast(nn.Module):
         else:
             score_rgb_to_sk, score_sk_to_rgb = SkeleContrast.memory_contrast_scores(x=pred_rgb, y=pred_sk,
                                                                                     x_mem=mem_vid, y_mem=mem_sk,
-                                                                                    x_mem_rnd=mem_vid_rnd,
-                                                                                    y_mem_rnd=mem_sk_rnd,
+                                                                                    x_cont=mem_vid_cont,
+                                                                                    y_cont=mem_sk_cont,
                                                                                     matching_fn=self.score_function,
                                                                                     contrast_type=self.contrast_type)
 
             # score = torch.cat((score_rgb_to_sk, score_sk_to_rgb), dim=0)
 
-            targets_rgb_to_sk = torch.tensor(list(range(bs)))
-            targets_sk_to_rgb = torch.tensor(list(range(bs)))
+            if mem_vid_cont.shape[0] > 0:
+                targets_rgb_to_sk = torch.tensor([0] * bs)
+                targets_sk_to_rgb = torch.tensor([0] * bs)
+            else:
+                targets_rgb_to_sk = torch.tensor(list(range(bs)))
+                targets_sk_to_rgb = torch.tensor(list(range(bs)))
 
             targets_rgb_to_sk = torch.LongTensor(targets_rgb_to_sk).to(block_rgb.device)
             targets_sk_to_rgb = torch.LongTensor(targets_sk_to_rgb).to(block_rgb.device)
@@ -251,8 +255,8 @@ class SkeleContrast(nn.Module):
                                y: torch.Tensor,
                                x_mem: torch.Tensor,
                                y_mem: torch.Tensor,
-                               x_mem_rnd: torch.Tensor,
-                               y_mem_rnd: torch.Tensor,
+                               x_cont: torch.Tensor,
+                               y_cont: torch.Tensor,
                                matching_fn: str,
                                use_current_contrast=True,
                                temp_tao=0.1,
@@ -267,18 +271,29 @@ class SkeleContrast(nn.Module):
             batch_size = x.shape[0]
 
             if use_current_contrast:
-                x_mem = torch.cat((x, x_mem_rnd))
-                y_mem = torch.cat((y, y_mem_rnd))
+                if x_cont.shape[0] > 0:
+                    # To avoid batch contrast
+                    x_calc = x_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+                    y_calc = y_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+
+                    x_tp = x.reshape((batch_size, 1, -1))
+                    y_tp = y.reshape((batch_size, 1, -1))
+
+                    x_calc = torch.cat((x_tp, x_calc), dim=1)
+                    y_calc = torch.cat((y_tp, y_calc), dim=1)
+                else:
+                    x_calc = x.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+                    y_calc = y.unsqueeze(dim=0).repeat(batch_size, 1, 1)
             else:
-                x_mem = torch.cat((x_mem, x_mem_rnd))
-                y_mem = torch.cat((y_mem, y_mem_rnd))
+                x_calc = torch.cat((x_mem, x_cont))
+                y_calc = torch.cat((y_mem, y_cont))
 
             for i in range(batch_size):
                 # The scores are calculated between the output of one modality and the output
                 # of the other modality. The first vectors are the ground truth (other modality).
                 if contrast_type == "cross":
-                    scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
-                    scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
+                    scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_calc[i], matching_fn=matching_fn)
+                    scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_calc[i], matching_fn=matching_fn)
                 elif contrast_type == "self":
                     scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
                     scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
@@ -299,7 +314,7 @@ class SkeleContrast(nn.Module):
     def pairwise_scores(x: torch.Tensor,
                         y: torch.Tensor,
                         matching_fn: str,
-                        temp_tao=0.1) -> torch.Tensor:
+                        temp_tao=1.) -> torch.Tensor:
         """Efficiently calculate pairwise distances (or other similarity scores) between
         two sets of samples.
         # Arguments

@@ -49,11 +49,11 @@ parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
 parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-parser.add_argument('--representation_size', default=512, type=int)
+parser.add_argument('--representation_size', default=128, type=int)
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
 parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--batch_size', default=14, type=int)
-parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
+parser.add_argument('--batch_size', default=12, type=int)
+parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
@@ -61,7 +61,7 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--print_freq', default=10, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
-parser.add_argument('--memory_contrast', default=None, type=int,
+parser.add_argument('--memory_contrast', default=4096, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
 parser.add_argument('--memory_update_rate', default=1, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
@@ -72,7 +72,7 @@ parser.add_argument('--contrast_type', default="cross", type=str, choices=["cros
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
-parser.add_argument('--loader_workers', default=32, type=int,
+parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 parser.add_argument('--dali_workers', default=16, type=int,
                     help='Number of dali workers to pre load batch data. At least 1 worker is necessary.')
@@ -177,8 +177,8 @@ def main():
 
     check_and_prepare_parameters(model, args.training_focus)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
-    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+    #optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
 
     # Prepare Loss
     # Contrastive loss can be implemented with CrossEntropyLoss with vector similarity.
@@ -424,6 +424,54 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, epoch, args=None):
     return tr_stats["loss"].val, accuracies[0], accuracies
 
 
+def calculate_statistics_mem_contrast(rep_vid: torch.Tensor, rep_sk: torch.Tensor, mem_vid: torch.Tensor,
+                                      mem_sk: torch.Tensor,
+                                      mem_vid_cont: torch.Tensor, mem_sk_cont: torch.Tensor, tr_stats):
+    batch_size = rep_vid.shape[0]
+
+    # Statistics on the calculated reps.
+    cross_view_sim = torch.sum(rep_vid * rep_sk, dim=1)
+
+    cross_view_sim_m = torch.mean(cross_view_sim, dim=0)
+    cross_view_sim_s = torch.std(cross_view_sim, dim=0)
+
+    tr_stats["cv_rep_sim_m"].update(cross_view_sim_m.item(), batch_size)
+    tr_stats["cv_rep_sim_s"].update(cross_view_sim_s.item(), batch_size)
+
+    # Assuming that the batches are random, thid dealigns matching views, making the new pairing random.
+    # This provides a baseline for the similarity of random representations.
+    rand_rep_sk = rep_sk.roll(shifts=1, dims=0)  # TODO: Check if copy or changed tensor
+    cross_view_rand_sim = torch.sum(rep_vid * rand_rep_sk, dim=1)
+    cross_view_rand_sim_m = torch.mean(cross_view_rand_sim, dim=0)
+    cross_view_rand_sim_s = torch.std(cross_view_rand_sim, dim=0)
+
+    tr_stats["cv_rand_sim_m"].update(cross_view_rand_sim_m.item(), batch_size)
+    tr_stats["cv_rand_sim_s"].update(cross_view_rand_sim_s.item(), batch_size)
+
+    intsct_count = min(mem_sk_cont.shape[0], rep_vid.shape[0])
+
+    if intsct_count > 0:
+        cv_contrast_sim_vid = torch.sum(rep_vid[:intsct_count] * mem_sk_cont[:intsct_count], dim=1)
+        cv_contrast_sim_vid_m = torch.mean(cv_contrast_sim_vid, dim=0)
+        cv_contrast_sim_vid_s = torch.std(cv_contrast_sim_vid, dim=0)
+
+        cv_contrast_sim_sk = torch.sum(rep_sk[:intsct_count] * mem_vid_cont[:intsct_count], dim=1)
+        cv_contrast_sim_sk_m = torch.mean(cv_contrast_sim_sk, dim=0)
+        cv_contrast_sim_sk_s = torch.std(cv_contrast_sim_sk, dim=0)
+
+        tr_stats["cv_cont_sim_vid_m"].update(cv_contrast_sim_vid_m.item(), batch_size)
+        tr_stats["cv_cont_sim_vid_s"].update(cv_contrast_sim_vid_s.item(), batch_size)
+
+        tr_stats["cv_cont_sim_sk_m"].update(cv_contrast_sim_sk_m.item(), batch_size)
+        tr_stats["cv_cont_sim_sk_s"].update(cv_contrast_sim_sk_s.item(), batch_size)
+
+    sk_prox_reg_sim = torch.mean(torch.sum(rep_sk * mem_sk.to(rep_sk.device), dim=1), dim=0)
+    rgb_prox_reg_sim = torch.mean(torch.sum(rep_vid * mem_vid.to(rep_vid.device), dim=1), dim=0)
+
+    tr_stats["sk_prox_reg_sim"].update(sk_prox_reg_sim.item(), batch_size)
+    tr_stats["vid_prox_reg_sim"].update(rgb_prox_reg_sim.item(), batch_size)
+
+
 def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem_queue, memory_contrast_size=None,
                              args=None):
     global iteration
@@ -434,12 +482,24 @@ def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem
                 "time_memory_update":    AverageMeter(locality=args.print_freq),
                 "time_forward":          AverageMeter(locality=args.print_freq),
                 "time_backward":         AverageMeter(locality=args.print_freq),
+
                 "total_loss":            AverageMeter(locality=args.print_freq),
                 "sk_loss":               AverageMeter(locality=args.print_freq),
                 "vid_loss":              AverageMeter(locality=args.print_freq),
-                "cross_view_sim":        AverageMeter(locality=args.print_freq),
+
+                "cv_rep_sim_m":          AverageMeter(locality=args.print_freq),
+                "cv_rep_sim_s":          AverageMeter(locality=args.print_freq),
+                "cv_rand_sim_m":         AverageMeter(locality=args.print_freq),
+                "cv_rand_sim_s":         AverageMeter(locality=args.print_freq),
+
+                "cv_cont_sim_vid_m":     AverageMeter(locality=args.print_freq),
+                "cv_cont_sim_vid_s":     AverageMeter(locality=args.print_freq),
+                "cv_cont_sim_sk_m":      AverageMeter(locality=args.print_freq),
+                "cv_cont_sim_sk_s":      AverageMeter(locality=args.print_freq),
+
                 "sk_prox_reg_sim":       AverageMeter(locality=args.print_freq),
                 "vid_prox_reg_sim":      AverageMeter(locality=args.print_freq),
+
                 "prox_reg_loss":         AverageMeter(locality=args.print_freq),
                 "accuracy_sk":           {"top1": AverageMeter(locality=args.print_freq),
                                           "top3": AverageMeter(locality=args.print_freq),
@@ -482,17 +542,17 @@ def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem
         vid_seq = vid_seq.to(cuda_device)
         sk_seq = sk_seq.to(cuda_device)
 
-        mem_vid.to(cuda_device)
-        mem_sk.to(cuda_device)
-        mem_vid_cont.to(cuda_device)
-        mem_sk_cont.to(cuda_device)
+        mem_vid = mem_vid.to(cuda_device)
+        mem_sk = mem_sk.to(cuda_device)
+        mem_vid_cont = mem_vid_cont.to(cuda_device)
+        mem_sk_cont = mem_sk_cont.to(cuda_device)
 
         tr_stats["time_cuda_transfer"].update(time.perf_counter() - start_time)
 
         # Forward pass: Calculation
         start_time = time.perf_counter()
 
-        score, targets, mem_vid, mem_sk = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont)
+        score, targets, rep_vid, rep_sk = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont)
 
         # Forward pass: Unpack results
         score_sk_to_rgb = score["sk_to_rgb"]
@@ -512,18 +572,11 @@ def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem
         mem_sk_old = memories["skeleton"][bat_idxs]
         mem_rgb_old = memories["video"][bat_idxs]
 
-        # Average distance of representations
-        cross_view_sim = torch.mean(torch.sum(mem_vid * mem_sk, dim=1), dim=0)
-        sk_prox_reg_sim = torch.mean(torch.sum(mem_sk * mem_sk_old.to(mem_sk.device), dim=1), dim=0)
-        rgb_prox_reg_sim = torch.mean(torch.sum(mem_vid * mem_rgb_old.to(mem_vid.device), dim=1), dim=0)
-
-        tr_stats["cross_view_sim"].update(cross_view_sim.item(), batch_size)
-        tr_stats["sk_prox_reg_sim"].update(sk_prox_reg_sim.item(), batch_size)
-        tr_stats["vid_prox_reg_sim"].update(rgb_prox_reg_sim.item(), batch_size)
+        calculate_statistics_mem_contrast(rep_vid, rep_sk, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont, tr_stats)
 
         if delta is not None:
-            sk_prox_reg_dist = torch.mean(torch.norm(mem_sk - mem_sk_old.to(mem_sk.device), dim=1), dim=0)
-            rgb_prox_reg_dist = torch.mean(torch.norm(mem_vid - mem_rgb_old.to(mem_vid.device), dim=1), dim=0)
+            sk_prox_reg_dist = torch.mean(torch.norm(rep_sk - mem_sk_old.to(rep_sk.device), dim=1), dim=0)
+            rgb_prox_reg_dist = torch.mean(torch.norm(rep_vid - mem_rgb_old.to(rep_vid.device), dim=1), dim=0)
 
             prox_reg_loss = delta * (torch.mean(torch.stack([sk_prox_reg_dist, rgb_prox_reg_dist])))
             tr_stats["prox_reg_loss"].update(prox_reg_loss.item(), batch_size)
@@ -531,10 +584,10 @@ def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem
             tr_stats["prox_reg_loss"].update(None, batch_size)
             prox_reg_loss = None
 
-        mem_sk_new = alph * mem_sk.clone().detach().cpu() + (1. - alph) * mem_sk_old
+        mem_sk_new = alph * rep_sk.clone().detach().cpu() + (1. - alph) * mem_sk_old
         mem_sk_new.requires_grad = False
 
-        mem_rgb_new = alph * mem_vid.clone().detach().cpu() + (1. - alph) * mem_rgb_old
+        mem_rgb_new = alph * rep_vid.clone().detach().cpu() + (1. - alph) * mem_rgb_old
         mem_rgb_new.requires_grad = False
 
         memories["skeleton"][bat_idxs] = mem_sk_new
@@ -584,7 +637,7 @@ def train_skvid_mem_contrast(data_loader, model, optimizer, epoch, memories, mem
         tic = time.perf_counter()
         # Next iteration
 
-    write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch)
+    # write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch)
     print_stats_timings_mem_contrast(tr_stats)
 
     avg_acc = (tr_stats["accuracy_sk"]["top1"].val + tr_stats["accuracy_rgb"]["top1"].val) / 2.
@@ -624,9 +677,12 @@ def write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch):
                                                     'top3': tr_stats["accuracy_sk"]["top3"].val,
                                                     'top5': tr_stats["accuracy_sk"]["top5"].val}, epoch)
 
-    writer_train.add_scalars('representation_similarities', {'cross_view': tr_stats["cross_view_sim"].val,
-                                                             'vid_to_mem': tr_stats["vid_prox_reg_sim"].val,
-                                                             'sk_to_mem':  tr_stats["sk_prox_reg_sim"].val}, epoch)
+    writer_train.add_scalars('rep_similarities', {'cross_view_tp':       tr_stats["cross_view_sim"].val,
+                                                  'cross_view_noise':    tr_stats["cross_view_noise_sim"].val,
+                                                  'vid_to_sk_mem_noise': tr_stats["cross_view_contrast_sim_rgb"].val,
+                                                  'sk_to_vid_mem_noise': tr_stats["cross_view_contrast_sim_sk"].val,
+                                                  'vid_to_mem':          tr_stats["vid_prox_reg_sim"].val,
+                                                  'sk_to_mem':           tr_stats["sk_prox_reg_sim"].val}, epoch)
 
 
 def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
@@ -642,15 +698,48 @@ def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
 
 
 def write_stats_mem_contrast_iteration(tr_stats, writer_train, iteration):
-    pass
-    # writer_train.add_scalar('iterations/loss_rgb', tr_stats["total_loss"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/loss_sk', tr_stats["total_loss"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/total_loss', tr_stats["total_loss"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/accuracy_sk', tr_stats["accuracy_sk"]["top1"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/accuracy_rgb', tr_stats["accuracy_rgb"]["top1"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/sk_prox_reg_sim', tr_stats["sk_prox_reg_sim"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/vid_prox_reg_sim', tr_stats["vid_prox_reg_sim"].local_avg, iteration)
-    # writer_train.add_scalar('iterations/cross_view_dist', tr_stats["cross_view_sim"].local_avg, iteration)
+    # save curves
+    avg_acc = (tr_stats["accuracy_sk"]["top1"].local_avg + tr_stats["accuracy_rgb"]["top1"].local_avg) / 2.
+
+    losses_dict = {'loss':           tr_stats["total_loss"].local_avg,
+                   'loss_vid_to_sk': tr_stats["vid_loss"].local_avg,
+                   'loss_sk_to_vid': tr_stats["sk_loss"].local_avg}
+
+    if args.prox_reg_multiplier:
+        losses_dict['loss_prox_reg'] = tr_stats["prox_reg_loss"].local_avg
+
+    writer_train.add_scalars('it/training_losses', losses_dict, iteration)
+
+    writer_train.add_scalars('it/vid_to_sk_accuracy', {'top1': tr_stats["accuracy_rgb"]["top1"].local_avg,
+                                                       'top3': tr_stats["accuracy_rgb"]["top3"].local_avg,
+                                                       'top5': tr_stats["accuracy_rgb"]["top5"].local_avg}, iteration)
+
+    writer_train.add_scalars('it/sk_to_vid_accuracy', {'top1': tr_stats["accuracy_sk"]["top1"].local_avg,
+                                                       'top3': tr_stats["accuracy_sk"]["top3"].local_avg,
+                                                       'top5': tr_stats["accuracy_sk"]["top5"].local_avg}, iteration)
+
+    rep_sim_dict = {'cv_tp_sim_mean':   tr_stats["cv_rep_sim_m"].local_avg,
+                    'cv_rand_sim_mean': tr_stats["cv_rand_sim_m"].local_avg,
+                    'cv_tp_sim_std':    tr_stats["cv_rep_sim_s"].local_avg,
+                    'cv_rnd_sim_std':   tr_stats["cv_rand_sim_s"].local_avg,
+                    }
+
+    writer_train.add_scalars('it/cv_new_rep_sim', rep_sim_dict, iteration)
+
+    cont_sim_dict = {'cv_vid_to_sk_cont_mean': tr_stats["cv_cont_sim_vid_m"].local_avg,
+                     'cv_vid_to_sk_cont_std':  tr_stats["cv_cont_sim_vid_s"].local_avg,
+                     'cv_sk_to_vid_cont_mean': tr_stats["cv_cont_sim_vid_m"].local_avg,
+                     'cv_sk_to_vid_cont_std':  tr_stats["cv_cont_sim_vid_s"].local_avg,
+                     }
+
+    writer_train.add_scalars('it/cv_cont_rep_sim', cont_sim_dict, iteration)
+
+    mem_sim_dict = {
+        'vid_to_mem': tr_stats["vid_prox_reg_sim"].local_avg,
+        'sk_to_mem':  tr_stats["sk_prox_reg_sim"].local_avg
+        }
+
+    writer_train.add_scalars('it/mem_rep_sim', mem_sim_dict, iteration)
 
 
 def print_stats_timings_batch_contrast(tr_stats):
@@ -686,6 +775,8 @@ def print_tr_stats_iteration_batch_contrast(stats: dict, epoch, idx, batch_count
 def print_tr_stats_iteration_mem_contrast(stats: dict, epoch, idx, batch_count, duration):
     prox_reg_str = f'Prox Reg {stats["prox_reg_loss"].local_avg:.2f} ' if stats["prox_reg_loss"].val is not None else ''
 
+    cv_sim_diff = stats["cv_rep_sim_m"].local_avg - stats["cv_rand_sim_m"].local_avg
+
     print(f'Epoch: [{epoch}][{idx}/{batch_count}]\t '
           f'Losses Total {stats["total_loss"].local_avg:.6f} '
           f'SK {stats["sk_loss"].local_avg:.2f} '
@@ -696,7 +787,15 @@ def print_tr_stats_iteration_mem_contrast(stats: dict, epoch, idx, batch_count, 
           f'top5 {stats["accuracy_sk"]["top5"].local_avg:.4f} {stats["accuracy_rgb"]["top5"].local_avg:.4f} | '
           f'T:{duration:.2f}\n'
           '                     '  # For alignment 
-          f'Cross View Sim {stats["cross_view_sim"].local_avg:.3f} | '
+          f'CV Sim M {stats["cv_rep_sim_m"].local_avg:.3f} ({cv_sim_diff:+1.0e}) '
+          f'S {stats["cv_rep_sim_s"].local_avg:1.0e} \n'
+          '                     '
+          f'CV Rnd M {stats["cv_rand_sim_m"].local_avg:.3f}          S {stats["cv_rand_sim_s"].local_avg:1.0e} \n'
+          '                     '  # For alignment 
+          f'Vid-SK Cont M {stats["cv_cont_sim_vid_m"].local_avg:.3f} S {stats["cv_cont_sim_vid_s"].local_avg:1.0e} \n'
+          '                     '  # For alignment 
+          f'SK-Vid Cont M {stats["cv_cont_sim_sk_m"].local_avg:.3f} S {stats["cv_cont_sim_sk_s"].local_avg:1.0e} \n'
+          '                     '
           f'SK Prox Sim {stats["sk_prox_reg_sim"].local_avg:.3f} | '
           f'RGB Prox Sim {stats["vid_prox_reg_sim"].local_avg:.3f}\n')
 
@@ -780,7 +879,8 @@ def train_two_stream_contrastive(data_loader, model, optimizer, epoch, memories=
             if batch_size > 2: input_seq = input_seq[0:2, :]
             writer_train.add_image('input_seq',
                                    de_normalize(vutils.make_grid(
-                                       input_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim, args.img_dim),
+                                       input_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim,
+                                                                                   args.img_dim),
                                        nrow=args.seq_len)),
                                    iteration)
         # del input_seq, sk_seq
