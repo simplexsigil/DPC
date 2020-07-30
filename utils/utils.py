@@ -9,6 +9,22 @@ plt.switch_backend('agg')
 from collections import deque
 from torchvision import transforms
 import math
+import torchvision.utils as vutils
+
+
+def write_out_images(img_seq, writer, iteration, img_dim=128):
+    de_normalize = denorm()
+
+    if img_seq.shape[0] > 2:
+        out_seq = img_seq[0:2, :]
+    else:
+        out_seq = img_seq
+
+    writer.add_image('input_seq',
+                     de_normalize(vutils.make_grid(
+                         out_seq.transpose(2, 3).contiguous().view(-1, 3, img_dim, img_dim),
+                         nrow=img_seq.shape[0])),
+                     iteration)
 
 
 def save_checkpoint(state, is_best=0, model_path='models/checkpoint.pth.tar'):
