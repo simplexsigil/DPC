@@ -44,7 +44,7 @@ class DatasetUtils:
         return video_info
 
     @staticmethod
-    def idx_sampler(vlen, seq_len, downsample, vpath, sample_mid_seq=False):
+    def idx_sampler(vlen, seq_len, downsample, vpath, sample_discretion=None, start_frame=None):
         '''sample index from a video'''
         if vlen - seq_len * downsample < 0:
             print("Tried to sample a video which is too short. This should not happen after filtering short videos."
@@ -52,10 +52,14 @@ class DatasetUtils:
             return [None]
 
         # Randomly start anywhere within the video (as long as the remainder is long enough).
-        if not sample_mid_seq:
+        if sample_discretion is None:
             start_idx = np.random.choice(range(vlen - seq_len * downsample)) if vlen - seq_len * downsample > 0 else 0
         else:
-            start_idx = (vlen - seq_len * downsample) // 2 if vlen - seq_len * downsample > 0 else 0
+            if start_frame is not None:
+                start_idx = start_frame
+            else:
+                start_points = (vlen - seq_len * downsample) // sample_discretion
+                start_idx = np.random.choice(range(start_points) * sample_discretion)
 
         seq_idxs = start_idx + np.arange(seq_len) * downsample
 
@@ -146,6 +150,24 @@ class DatasetUtils:
         assert T == len(frame_indices)
 
         return sk_seq
+
+    @staticmethod
+    def subsample_discretely(sample_info: pd.DataFrame, sample_discretion: int, seq_len: int, downsample: int = 1):
+        subs_sample_info = {col: [] for col in sample_info.columns}
+        subs_sample_info["start_frame"] = []
+
+        for idx, row in tqdm(sample_info.iterrows(), total=len(sample_info)):
+            sub_count = (row["frame_count"] - seq_len * downsample) // sample_discretion
+            for i in range(sub_count):
+                row["start_frame"] = i * sample_discretion
+
+                for key, val in row.to_dict().items():
+                    subs_sample_info[key].append(val)
+
+        subs_sample_info = pd.DataFrame.from_dict(subs_sample_info)
+        subs_sample_info = subs_sample_info.set_index(["id", "start_frame"], drop=False)
+
+        return subs_sample_info
 
     @staticmethod
     def read_video_info(video_info, extract_infos=True, max_samples=None) -> pd.DataFrame:
@@ -580,7 +602,7 @@ class Kinetics400_full_3d(data.Dataset):
             v_len = min(v_len, skeleton_frame_count)
 
         frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"],
-                                        sample_mid_seq=self.sample_mid_seq)
+                                        sample_discretion=self.sample_mid_seq)
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
 

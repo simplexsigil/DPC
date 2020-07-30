@@ -62,7 +62,7 @@ parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
 parser.add_argument('--memory_contrast', default=2048, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
-parser.add_argument('--memory_update_rate', default=0.1, type=float,
+parser.add_argument('--memory_update_rate', default=0.01, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
 parser.add_argument('--prox_reg_multiplier', default=None, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')

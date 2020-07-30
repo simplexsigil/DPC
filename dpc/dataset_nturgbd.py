@@ -409,14 +409,14 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  split_mode="perc",
                  split_frac=0.1,
                  sample_limit=None,
-                 sample_mid_seq=True):
+                 sample_discretion=20):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
         self.seq_len = seq_len
         self.downsample = downsample
         self.return_label = return_label
-        self.sample_mid_seq = sample_mid_seq
+        self.sample_discretion = sample_discretion
 
         self.use_skeleton = skele_motion_root is not None
 
@@ -444,11 +444,18 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         sample_count = len(self.sample_info)
         self.sk_info = ndu.get_skeleton_info(skele_motion_root)
         self.sample_info = ndu.filter_by_missing_skeleton_info(self.sample_info, self.sk_info)
-        print(
-            "Dropped {} of {} samples due to missing skeleton information.".format(sample_count - len(self.sample_info),
-                                                                                   sample_count))
+        print(f"Dropped {sample_count - len(self.sample_info)} of "
+              f"{sample_count} samples due to missing skeleton information.")
 
-        print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
+        print(f"Remaining videos in mode {self.split}: {len(self.sample_info)}")
+
+        if sample_discretion is not None:
+            print(f"Subsampling videos to clips of length {seq_len}. \n"
+                  f"Shifting by {sample_discretion} frames on each subsample. This may take a while.")
+            self.sample_info = ndu.subsample_discretely(self.sample_info, sample_discretion, seq_len=seq_len,
+                                                        downsample=downsample)
+
+            print(f"Generated {len(self.sample_info)} subsamples.")
 
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.split == "val":
@@ -462,7 +469,10 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
     def __getitem__(self, index):
         sample = self.sample_info.iloc[index]
 
-        frame_indices = DatasetUtils.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"], self.sample_mid_seq)
+        st_frame = sample["start_frame"] if "start_frame" in sample.index else None
+
+        frame_indices = DatasetUtils.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"],
+                                                 self.sample_discretion, st_frame)
 
         seq = [DatasetUtils.pil_loader(os.path.join(sample["path"], 'image_%05d.jpg' % (i + 1))) for i in frame_indices]
 
