@@ -164,12 +164,15 @@ class DatasetUtils:
 
         for idx, row in tqdm(sample_info.iterrows(), total=len(sample_info)):
             sub_count = (row["frame_count"] - seq_len * downsample) // sample_discretion
+
+            if row["frame_count"] > 305:
+                print(f'Frame count is unusually high: {row["frame_count"]}, frame count {row["frame_count"]} '
+                      f'for path {row["path"]}. Skipping video.')
+
+                continue
+
             for i in range(sub_count):
                 row["start_frame"] = i * sample_discretion
-
-                if i * sample_discretion > 300:
-                    print(f'Start frame is unusually high: {i*sample_discretion}, frame count {row["frame_count"]} '
-                          f'for path {row["path"]}')
 
                 for key, val in row.to_dict().items():
                     subs_sample_info[key].append(val)
