@@ -59,7 +59,7 @@ class DatasetUtils:
                 if vlen < start_frame + seq_len:
                     print(f"Skeleton frames were not available at position {start_frame}, sampling in the middle.")
                     start_points = (vlen - seq_len * downsample) // sample_discretion
-                    start_idx = np.random.choice(range(start_points) * sample_discretion)
+                    start_idx = np.random.choice(np.array(range(start_points)) * sample_discretion)
                 else:
                     start_idx = start_frame
             else:
