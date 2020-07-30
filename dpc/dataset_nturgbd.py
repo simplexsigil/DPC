@@ -409,7 +409,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  split_mode="perc",
                  split_frac=0.1,
                  sample_limit=None,
-                 sample_mid_seq=False):
+                 sample_mid_seq=True):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform

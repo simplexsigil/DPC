@@ -276,8 +276,8 @@ class SkeleContrast(nn.Module):
                     x_calc = x_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
                     y_calc = y_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
 
-                    x_tp = x.reshape((batch_size, 1, -1))
-                    y_tp = y.reshape((batch_size, 1, -1))
+                    x_tp = x_mem.view((batch_size, 1, -1))
+                    y_tp = y_mem.view((batch_size, 1, -1))
 
                     x_calc = torch.cat((x_tp, x_calc), dim=1)
                     y_calc = torch.cat((y_tp, y_calc), dim=1)
@@ -292,8 +292,8 @@ class SkeleContrast(nn.Module):
                 # The scores are calculated between the output of one modality and the output
                 # of the other modality. The first vectors are the ground truth (other modality).
                 if contrast_type == "cross":
-                    scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), y_calc[i], matching_fn=matching_fn)
-                    scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), x_calc[i], matching_fn=matching_fn)
+                    scores_x_i = SkeleContrast.pairwise_scores(x[i].view((1, -1)), y_calc[i], matching_fn=matching_fn)
+                    scores_y_i = SkeleContrast.pairwise_scores(y[i].view((1, -1)), x_calc[i], matching_fn=matching_fn)
                 elif contrast_type == "self":
                     scores_x_i = SkeleContrast.pairwise_scores(x[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
                     scores_y_i = SkeleContrast.pairwise_scores(y[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)

@@ -22,7 +22,6 @@ from datetime import datetime
 import re
 
 import torch
-import torch.optim as optim
 from torch.utils import data
 from torchvision import transforms
 import torchvision.utils as vutils
@@ -51,19 +50,19 @@ parser.add_argument('--max_samples', default=None, type=int, help='Maximum numbe
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=128, type=int)
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
-parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--batch_size', default=12, type=int)
-parser.add_argument('--lr', default=1e-5, type=float, help='learning rate')
+parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--batch_size', default=15, type=int)
+parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
 parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--print_freq', default=10, type=int, help='frequency of printing output during training')
+parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
-parser.add_argument('--memory_contrast', default=4096, type=int,
+parser.add_argument('--memory_contrast', default=2048, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
-parser.add_argument('--memory_update_rate', default=1, type=float,
+parser.add_argument('--memory_update_rate', default=0.1, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
 parser.add_argument('--prox_reg_multiplier', default=None, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
@@ -177,8 +176,8 @@ def main():
 
     check_and_prepare_parameters(model, args.training_focus)
 
-    #optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
+    #optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
 
     # Prepare Loss
     # Contrastive loss can be implemented with CrossEntropyLoss with vector similarity.
@@ -254,7 +253,7 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
                                                                                   args.memory_contrast,
                                                                                   args)
 
-            mem_queue.clear()
+            # mem_queue.clear()
 
         val_loss, val_acc, val_accuracy_list = validate(val_loader, model, epoch)
 
@@ -263,12 +262,12 @@ def training_loop(model, optimizer, train_loader, val_loader, writer_train, writ
             val_loader.reset()
 
         # save curve
-        writer_val.add_scalar('global/loss', val_loss, epoch)
-        writer_val.add_scalar('global/accuracy', val_acc, epoch)
+        writer_val.add_scalar('ep/val_loss', val_loss, epoch)
 
-        writer_val.add_scalar('accuracy/top1', val_accuracy_list[0], epoch)
-        writer_val.add_scalar('accuracy/top3', val_accuracy_list[1], epoch)
-        writer_val.add_scalar('accuracy/top5', val_accuracy_list[2], epoch)
+        writer_val.add_scalars('ep/val_accuracy', {"top1": val_accuracy_list[0],
+                                                  "top3": val_accuracy_list[1],
+                                                  "top5": val_accuracy_list[2]
+                                                  }, epoch)
 
         # save check_point
         is_best = val_acc > best_acc
