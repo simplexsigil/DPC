@@ -57,9 +57,10 @@ class DatasetUtils:
         else:
             if start_frame is not None:
                 if vlen < start_frame + seq_len:
-                    print(f"Skeleton frames were not available at position {start_frame}, sampling in the middle.")
-                    start_points = (vlen - seq_len * downsample) // sample_discretion
-                    start_idx = np.random.choice(np.array(range(start_points)) * sample_discretion)
+                    print(
+                        f"Skeleton frames were not available at position {start_frame}, for {vpath}  "
+                        f"with discretization {sample_discretion} sampling in the middle.")
+                    start_idx = (vlen - seq_len) // 2
                 else:
                     start_idx = start_frame
             else:
@@ -165,6 +166,10 @@ class DatasetUtils:
             sub_count = (row["frame_count"] - seq_len * downsample) // sample_discretion
             for i in range(sub_count):
                 row["start_frame"] = i * sample_discretion
+
+                if i * sample_discretion > 300:
+                    print(f'Start frame is unusually high: {i*sample_discretion}, frame count {row["frame_count"]} '
+                          f'for path {row["start_frame"]}')
 
                 for key, val in row.to_dict().items():
                     subs_sample_info[key].append(val)
