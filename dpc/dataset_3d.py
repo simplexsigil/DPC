@@ -56,7 +56,12 @@ class DatasetUtils:
             start_idx = np.random.choice(range(vlen - seq_len * downsample)) if vlen - seq_len * downsample > 0 else 0
         else:
             if start_frame is not None:
-                start_idx = start_frame
+                if vlen < start_frame + seq_len:
+                    print(f"Skeleton frames were not available at position {start_frame}, sampling in the middle.")
+                    start_points = (vlen - seq_len * downsample) // sample_discretion
+                    start_idx = np.random.choice(range(start_points) * sample_discretion)
+                else:
+                    start_idx = start_frame
             else:
                 start_points = (vlen - seq_len * downsample) // sample_discretion
                 start_idx = np.random.choice(range(start_points) * sample_discretion)
@@ -616,7 +621,7 @@ class Kinetics400_full_3d(data.Dataset):
 
         st_frame = sample["start_frame"] if "start_frame" in sample.index else None
 
-        frame_indices = kdu.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"],
+        frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"],
                                         self.sample_discretization, st_frame)
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
