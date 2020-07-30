@@ -169,7 +169,7 @@ class DatasetUtils:
 
                 if i * sample_discretion > 300:
                     print(f'Start frame is unusually high: {i*sample_discretion}, frame count {row["frame_count"]} '
-                          f'for path {row["start_frame"]}')
+                          f'for path {row["path"]}')
 
                 for key, val in row.to_dict().items():
                     subs_sample_info[key].append(val)
