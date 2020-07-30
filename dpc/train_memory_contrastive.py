@@ -23,7 +23,8 @@ def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_lo
         iteration, train_acc = train_skvid_mem_contrast(train_loader, memories, mem_queue, model, optimizer, criterion,
                                                         epoch, iteration, args, writer_train, cuda_device)
 
-        val_loss, val_acc, val_accuracy_list = tbc.validate_batch_contrast(val_loader, model, epoch)
+        val_loss, val_acc, val_accuracy_list = tbc.validate_batch_contrast(val_loader, model, criterion, cuda_device,
+                                                                           epoch, args)
 
         if args.use_dali:
             train_loader.reset()

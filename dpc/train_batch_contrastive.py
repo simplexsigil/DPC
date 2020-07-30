@@ -1,4 +1,6 @@
+import torch
 
+from utils import AverageMeter, calc_topk_accuracy
 
 
 def train_skvid_batch_contrast(data_loader, model, optimizer, epoch, args=None):
@@ -92,6 +94,7 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, epoch, args=None):
 
     return tr_stats["loss"].val, accuracies[0], accuracies
 
+
 def write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch):
     # save curve
     writer_train.add_scalar('training_loss', tr_stats["loss"].val, epoch)
@@ -134,7 +137,8 @@ def print_tr_stats_iteration_batch_contrast(stats: dict, epoch, idx, batch_count
           f'T:{duration:.2f}\n'
           )
 
-def validate_batch_contrast(data_loader, model, epoch):
+
+def validate_batch_contrast(data_loader, model, criterion, cuda_device, epoch, args):
     losses = AverageMeter()
     accuracy = AverageMeter()
     accuracy_list = [AverageMeter(), AverageMeter(), AverageMeter()]

@@ -315,7 +315,7 @@ class KineticsDatasetUtils(DatasetUtils):
         sample_infos = pd.read_csv(video_info_csv, header=0, names=["path", "frame_count"])
 
         if max_samples is not None:
-            sample_infos = sample_infos.sample(max_samples)
+            sample_infos = sample_infos.sample(min(max_samples, len(sample_infos)))
 
         if extract_infos:
             if worker_count == 0:
@@ -485,9 +485,10 @@ class Kinetics400_full_3d(data.Dataset):
                  split_mode="perc",
                  split_frac=0.1,
                  sample_limit=None,
+                 sub_sample_limit=None,
                  use_cache=False,
                  cache_folder="cache",
-                 sample_mid_seq=False):
+                 sample_discretization=60):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -497,7 +498,7 @@ class Kinetics400_full_3d(data.Dataset):
 
         self.use_skeleton = skele_motion_root is not None
 
-        self.sample_mid_seq = sample_mid_seq
+        self.sample_discretization = sample_discretization
 
         tqdm.pandas(mininterval=0.5)
 
@@ -567,6 +568,18 @@ class Kinetics400_full_3d(data.Dataset):
 
         print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
 
+        if sample_discretization is not None:
+            print(f"Subsampling videos to clips of length {seq_len}. \n"
+                  f"Shifting by {sample_discretization} frames on each subsample. This may take a while.")
+            self.sample_info = kdu.subsample_discretely(self.sample_info, sample_discretization, seq_len=seq_len,
+                                                        downsample=downsample)
+
+            print(f"Generated {len(self.sample_info)} subsamples.")
+
+        if sub_sample_limit is not None:
+            self.sample_info = self.sample_info.sample(min(sub_sample_limit, len(self.sample_info)))
+            print(f"Limited training to {len(self.sample_info)} randomly selected subsamples.")
+
         # The original approach always used a subset of the test set for validation. Doing the same for comparability.
         if self.split == "val":
             if len(self.sample_info) > 500:
@@ -601,8 +614,10 @@ class Kinetics400_full_3d(data.Dataset):
             sk_seq, skeleton_frame_count = kdu.load_skeleton_seqs(self.sk_info, sample["id"])
             v_len = min(v_len, skeleton_frame_count)
 
-        frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"],
-                                        sample_discretion=self.sample_mid_seq)
+        st_frame = sample["start_frame"] if "start_frame" in sample.index else None
+
+        frame_indices = kdu.idx_sampler(sample["frame_count"], self.seq_len, self.downsample, sample["path"],
+                                        self.sample_discretization, st_frame)
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
 

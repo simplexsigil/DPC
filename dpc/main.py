@@ -46,6 +46,7 @@ parser.add_argument('--rgb_net', default='resnet18', type=str)
 parser.add_argument('--img_dim', default=128, type=int)
 parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
 parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
+parser.add_argument('--max_sub_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
 parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
 parser.add_argument('--representation_size', default=128, type=int)
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
@@ -348,6 +349,7 @@ def get_data(transform, mode='train', augmentation_settings=None, use_dali=False
                                           skele_motion_root=args.kinetics_skele_motion,
                                           split_mode=args.split_mode,
                                           sample_limit=args.max_samples,
+                                          sub_sample_limit=args.max_sub_samples,
                                           use_cache=not args.no_cache)
         elif args.dataset == 'ucf101':
             dataset = UCF101_3d(mode=mode,
