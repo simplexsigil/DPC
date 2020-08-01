@@ -116,12 +116,12 @@ def argument_checks(args):
 def main():
     # TODO: Set with arguments.
     augmentation_settings = {
-        "rot_range":      (-15, 15),
-        "hue_range":      (-3, 3),
-        "sat_range":      (0.7, 1.3),
-        "val_range":      (0.7, 1.3),
+        "rot_range":      (-30, 30),
+        "hue_range":      (-180, 180),
+        "sat_range":      (0.0, 1.3),
+        "val_range":      (0.5, 1.5),
         "hue_prob":       1.,
-        "crop_arr_range": (0.5, 1.)
+        "crop_arr_range": (0.4, 1.)
         }
 
     best_acc = 0

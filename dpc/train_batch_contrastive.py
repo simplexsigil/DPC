@@ -217,7 +217,7 @@ def print_tr_stats_timings_avg(tr_stats):
           f'Cuda Transfer: {tr_stats["time_cuda_transfer"].avg:.4f}s | '
           f'Forward: {tr_stats["time_forward"].avg:.4f}s | '
           f'Backward: {tr_stats["time_backward"].avg:.4f}s | '
-          f'All: {tr_stats["time_all"].avg:.4f}s')
+          f'All: {tr_stats["time_all"].avg:.4f}s\n')
 
 
 def validate(data_loader, model, criterion, cuda_device, epoch, args, writer_val):

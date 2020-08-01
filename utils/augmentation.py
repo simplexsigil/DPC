@@ -263,7 +263,7 @@ class ColorJitter(object):
             Should have 0<= hue <= 0.5 or -0.5 <= min <= max <= 0.5.
     """
 
-    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0, consistent=False, p=1.0):
+    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0, consistent=True, p=1.0):
         self.brightness = self._check_input(brightness, 'brightness')
         self.contrast = self._check_input(contrast, 'contrast')
         self.saturation = self._check_input(saturation, 'saturation')
