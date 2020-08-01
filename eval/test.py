@@ -79,7 +79,7 @@ def main():
         print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
     print("Cuda is available: {}".format(torch.cuda.is_available()))
 
-    global cuda;
+    global cuda
     cuda = torch.device('cuda')
 
     if args.dataset == 'ucf101':

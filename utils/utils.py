@@ -1,30 +1,33 @@
+import math
 import os
+from collections import deque
 from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torchvision.utils as vutils
+
+from augmentation import Denormalize
 
 plt.switch_backend('agg')
-from collections import deque
-from torchvision import transforms
-import math
-import torchvision.utils as vutils
 
 
 def write_out_images(img_seq, writer, iteration, img_dim=128):
-    de_normalize = denorm()
+    de_normalize = Denormalize()
 
     if img_seq.shape[0] > 2:
         out_seq = img_seq[0:2, :]
     else:
         out_seq = img_seq
 
-    writer.add_image('input_seq',
-                     de_normalize(vutils.make_grid(
-                         out_seq.transpose(2, 3).contiguous().view(-1, 3, img_dim, img_dim),
-                         nrow=img_seq.shape[0])),
-                     iteration)
+    # B, C, Sqlen, H, W
+
+    img_grid = vutils.make_grid(out_seq.transpose(1, 2).contiguous().view(-1, 3, img_dim, img_dim),
+                                nrow=img_seq.shape[0])
+    de_norm_imgs = de_normalize.denormalize(img_grid)
+
+    writer.add_image('input_seq', de_norm_imgs, iteration)
 
 
 def save_checkpoint(state, is_best=0, model_path='models/checkpoint.pth.tar'):
@@ -88,13 +91,6 @@ def calc_accuracy_binary(output, target):
     acc = torch.mean((pred == target.byte()).float())
     del pred, output, target
     return acc
-
-
-def denorm(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
-    assert len(mean) == len(std) == 3
-    inv_mean = [-mean[i] / std[i] for i in range(3)]
-    inv_std = [1 / i for i in std]
-    return transforms.Normalize(mean=inv_mean, std=inv_std)
 
 
 class AverageMeter(object):
@@ -251,3 +247,25 @@ def random_image_crop_square(min_area_n=0.4, max_area_n=1, image_width=150, imag
     crop_length_y = crop_length
 
     return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
+
+
+def write_out_checkpoint(epoch, iteration, model, optimizer, args, train_loss, train_acc, val_loss, val_acc, best_acc,
+                         best_epoch):
+    is_best = val_acc == best_acc
+
+    save_checkpoint({'epoch':      epoch + 1,
+                     'net':        args.rgb_net,
+                     'state_dict': model.state_dict(),
+                     'optimizer':  optimizer.state_dict(),
+                     'best_acc':   best_acc,
+                     'train_loss': train_loss,
+                     'train_acc':  train_acc,
+                     'val_loss':   val_loss,
+                     'val_acc':    val_acc,
+                     'iteration':  iteration},
+                    is_best,
+                    model_path=args.model_path)
+
+    with open(os.path.join(args.model_path, "training_state.log"), 'a') as f:
+        f.write(f"Epoch: {epoch + 1:4} | Acc Train: {train_acc:1.4f} | Acc Val: {val_acc:1.4f} | "
+                f"Best Acc Val: {best_acc:1.4f} | Best Epoch: {best_epoch + 1:4}\n")

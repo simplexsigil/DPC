@@ -24,86 +24,74 @@ from torch.utils import data
 from torchvision import transforms
 
 import train_memory_contrastive as tmc
+import train_batch_contrastive as tbc
 
 # This way, cuda optimizes for the hardware available, if input size is always equal.
 torch.backends.cudnn.benchmark = True
 
-global stop_time
-global cuda_device
-global criterion
-global iteration
-global de_normalize
-global img_path
-global writer_train
-global args
-
 parser = argparse.ArgumentParser()
+parser.add_argument('--prefix', default='exp-000', type=str, help='Identifier for this training run.')
+
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
-parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
+parser.add_argument('--loader_workers', default=16, type=int,
+                    help='Number of data loader workers to pre load batch data. Main thread used if 0.')
+
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--model', default='skelcont', type=str)
-parser.add_argument('--rgb_net', default='resnet18', type=str)
-parser.add_argument('--img_dim', default=128, type=int)
-parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
-parser.add_argument('--max_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
-parser.add_argument('--max_sub_samples', default=None, type=int, help='Maximum number of samples loaded by dataloader.')
-parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-parser.add_argument('--representation_size', default=128, type=int)
-parser.add_argument('--score_function', default='cos-nt-xent', type=str)
-parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--rgb_net', default='r2+1d18', type=str)
+
+parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=15, type=int)
+parser.add_argument('--max_samples', default=None, type=int, help='Sample instance limit.')
+
+parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for subsamples from available samples.')
+parser.add_argument('--max_sub_samples', default=None, type=int, help='Limit for subsamples from available samples.')
+
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
-parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
-parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
-parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
+parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
+
+parser.add_argument('--split-mode', default="perc", type=str)
+parser.add_argument('--split-test-frac', default=0.2, type=float)
+
+parser.add_argument('--img_dim', default=224, type=int)
+parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
+parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
+
+parser.add_argument('--score_function', default='cos-nt-xent', type=str)
+parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--representation_size', default=512, type=int)
+
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
-parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
-parser.add_argument('--use_dali', action='store_true', default=False, help='Reset learning rate when resume training?')
-parser.add_argument('--memory_contrast', default=2048, type=int,
+parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
+
+parser.add_argument('--memory_contrast', default=None, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
 parser.add_argument('--memory_update_rate', default=0.03, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
 parser.add_argument('--prox_reg_multiplier', default=None, type=float,
-                    help='Update rate for the exponentially moving average of the representation memory.')
-parser.add_argument('--contrast_type', default="cross", type=str, choices=["cross", "self"],
-                    help='If contrastive learning is done acording to other or on own representation.')
-parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
-parser.add_argument('--prefix', default='exp-000', type=str, help='prefix of checkpoint filename')
-parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
-parser.add_argument('--loader_workers', default=16, type=int,
-                    help='Number of data loader workers to pre load batch data. Main thread used if 0.')
+                    help='Penalty mutliplier for the new representation and its memory representation.')
+
+parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
+parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
+parser.add_argument('--start_epoch', default=0, type=int, help='Explicit epoch to start form.')
+
+parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
+
+parser.add_argument('--use_dali', action='store_true', default=False, help='Use NVIDIA Dali for data loading.')
 parser.add_argument('--dali_workers', default=16, type=int,
                     help='Number of dali workers to pre load batch data. At least 1 worker is necessary.')
-parser.add_argument('--dali_prefetch_queue', default=2, type=int,
-                    help='Number of samples to prefetch in GPU memory.')
-parser.add_argument('--train_csv',
-                    default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/train_set.csv"),
-                    type=str)
-parser.add_argument('--test_csv',
-                    default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/test_set.csv"),
-                    type=str)
+parser.add_argument('--dali_prefetch_queue', default=2, type=int, help='Number of samples to prefetch in GPU memory.')
 
-# TODO: Correct train json.
-parser.add_argument('--train_json_kinetics',
-                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/kinetics_val_label.json"),
-                    type=str)
-parser.add_argument('--test_json_kinetics',
-                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/kinetics_val_label.json"),
-                    type=str)
 parser.add_argument('--nturgbd-video-info',
                     default=os.path.expanduser("~/datasets/nturgbd/project_specific/dpc_converted/video_info.csv"),
                     type=str)
-parser.add_argument('--nturgbd-skele-motion', default=os.path.expanduser("~/datasets/nturgbd/skele-motion"),
-                    type=str)
+parser.add_argument('--nturgbd-skele-motion',
+                    default=os.path.expanduser("~/datasets/nturgbd/skele-motion"), type=str)
 parser.add_argument('--kinetics-video-info',
-                    default=os.path.expanduser("~/datasets/kinetics/kinetics400/video_info.csv"),
-                    type=str)
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400/video_info.csv"), type=str)
 parser.add_argument('--kinetics-skele-motion',
-                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/skele-motion"),
-                    type=str)
-parser.add_argument('--split-mode', default="perc", type=str)
-parser.add_argument('--split-test-frac', default=0.2, type=float)
+                    default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/skele-motion"), type=str)
 
 
 def argument_checks(args):
@@ -117,8 +105,6 @@ def argument_checks(args):
     assert args.batch_size % calc_gpus == 0, "Batch size has to be divisible by GPU count. DALI reduces GPUs by one."
     assert args.loader_workers >= 0
     assert args.dali_workers >= 1, "Minimum 1"
-    assert not (args.memory_contrast is None and args.contrast_type == "self"), \
-        "Self contrast without memory representations makes no sense."
 
     if not args.use_dali:  # For a cleaner printout of settings.
         args.dali_prefetch_queue = None
@@ -128,15 +114,6 @@ def argument_checks(args):
 
 
 def main():
-    # Todo: Get rid of all these global variables.
-    global args
-    global cuda_device
-    global criterion
-    global iteration
-    global de_normalize
-    global img_path
-    global writer_train
-
     # TODO: Set with arguments.
     augmentation_settings = {
         "rot_range":      (-15, 15),
@@ -144,7 +121,7 @@ def main():
         "sat_range":      (0.7, 1.3),
         "val_range":      (0.7, 1.3),
         "hue_prob":       1.,
-        "crop_arr_range": (0.4, 1.)
+        "crop_arr_range": (0.5, 1.)
         }
 
     best_acc = 0
@@ -158,13 +135,13 @@ def main():
     args = argument_checks(args)
 
     # setup tools
-    img_path, model_path, exp_path = set_path(args)
+    args.img_path, args.model_path, exp_path = set_path(args)
 
     # Setup cuda
     cuda_device, args.gpu = check_and_prepare_cuda(args.gpu)
 
     # Prepare model
-    model = select_and_prepare_model(args.model)
+    model = select_and_prepare_model(args)
 
     # Data Parallel uses a master device (default gpu 0)
     # and performs scatter gather operations on batches and resulting gradients.
@@ -200,19 +177,19 @@ def main():
 
     transform = prepare_augmentations(augmentation_settings, args)
 
-    writer_train, writer_val = get_summary_writers(args)
+    writer_train, writer_val = get_summary_writers(args.img_path, args.prefix)
 
     write_settings_file(args, exp_path)
 
-    train_loader, train_len = get_data(transform, 'train', augmentation_settings, use_dali=args.use_dali)
-    val_loader, val_len = get_data(transform, 'val', augmentation_settings, use_dali=False)
+    train_loader, train_len = get_data(transform, 'train', args, augmentation_settings)
+    val_loader, val_len = get_data(transform, 'val', args, augmentation_settings)
 
     if args.memory_contrast is not None:
         tmc.training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                                       model_path, img_path, args, cuda_device, best_acc=best_acc,
-                                       best_epoch=start_epoch)
+                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch)
     else:
-        raise NotImplementedError
+        tbc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
+                          args, cuda_device, best_acc=best_acc, best_epoch=start_epoch)
 
 
 def check_and_prepare_cuda(device_ids):
@@ -237,14 +214,13 @@ def check_and_prepare_cuda(device_ids):
     return cudev, device_ids
 
 
-def select_and_prepare_model(model_name):
-    if model_name == 'skelcont':
+def select_and_prepare_model(args):
+    if args.model == 'skelcont':
         model = SkeleContrast(img_dim=args.img_dim,
                               seq_len=args.seq_len,
-                              network=args.rgb_net,
+                              vid_backbone=args.rgb_net,
                               representation_size=args.representation_size,
-                              score_function=args.score_function,
-                              contrast_type=args.contrast_type)
+                              score_function=args.score_function)
     else:
         raise ValueError('wrong model!')
 
@@ -325,7 +301,7 @@ def prepare_augmentations(augmentation_settings, args):
     elif args.dataset == 'nturgbd' or args.dataset == 'kinetics400':  # designed for nturgbd, short size=150, rand crop to 128x128
         transform = transforms.Compose([
             RandomRotation(degree=augmentation_settings["rot_range"]),
-            RandomSizedCrop(size=args.img_dim, consistent=True),
+            RandomSizedCrop(size=args.img_dim, crop_area=augmentation_settings["crop_arr_range"], consistent=True),
             ColorJitter(brightness=augmentation_settings["val_range"], contrast=0,
                         saturation=augmentation_settings["sat_range"],
                         hue=[val / 360. for val in augmentation_settings["hue_range"]]),
@@ -338,8 +314,8 @@ def prepare_augmentations(augmentation_settings, args):
     return transform
 
 
-def get_data(transform, mode='train', augmentation_settings=None, use_dali=False):
-    if not use_dali:
+def get_data(transform, mode='train', args=None, augmentation_settings=None):
+    if not args.use_dali or mode == "val":
         if args.dataset == 'kinetics400':
             dataset = Kinetics400_full_3d(split=mode,
                                           transform=transform,
@@ -350,6 +326,7 @@ def get_data(transform, mode='train', augmentation_settings=None, use_dali=False
                                           split_mode=args.split_mode,
                                           sample_limit=args.max_samples,
                                           sub_sample_limit=args.max_sub_samples,
+                                          sampling_shift=args.sampling_shift,
                                           use_cache=not args.no_cache)
         elif args.dataset == 'ucf101':
             dataset = UCF101_3d(mode=mode,
@@ -419,11 +396,11 @@ def set_path(args, mode="training"):
     return img_path, model_path, exp_path
 
 
-def get_summary_writers(args):
+def get_summary_writers(img_path, prefix):
     time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    tboard_str = '{time}-{mode}-{args.prefix}'
-    val_name = tboard_str.format(args=args, mode="val", time=time_str)
-    train_name = tboard_str.format(args=args, mode="train", time=time_str)
+    tboard_str = '{time}-{mode}-{prefix}'
+    val_name = tboard_str.format(prefix=prefix, mode="val", time=time_str)
+    train_name = tboard_str.format(prefix=prefix, mode="train", time=time_str)
 
     try:  # old version
         writer_val = SummaryWriter(log_dir=os.path.join(img_path, val_name))

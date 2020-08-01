@@ -10,7 +10,7 @@ from utils import AverageMeter, write_out_images, calc_topk_accuracy, save_check
 
 
 def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                               model_path, img_path, args, cuda_device, best_acc=0.0, best_epoch=0):
+                               args, cuda_device, best_acc=0.0, best_epoch=0):
     memories, mem_queue = initialize_memories(len(train_loader.dataset), args.representation_size, args.memory_contrast,
                                               len(args.gpu), args.batch_size)
 
@@ -18,25 +18,15 @@ def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_lo
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        # plot_angle_distribution(memories["skeleton"], memories["video"], epoch, img_path)
-
         iteration, train_acc = train_skvid_mem_contrast(train_loader, memories, mem_queue, model, optimizer, criterion,
                                                         epoch, iteration, args, writer_train, cuda_device)
 
-        val_loss, val_acc, val_accuracy_list = tbc.validate_batch_contrast(val_loader, model, criterion, cuda_device,
-                                                                           epoch, args)
+        val_loss, val_acc, val_accuracy_list = tbc.validate(val_loader, model, criterion, cuda_device,
+                                                            epoch, args, writer_val)
 
         if args.use_dali:
             train_loader.reset()
             val_loader.reset()
-
-        # save curve
-        writer_val.add_scalar('ep/val_loss', val_loss, epoch)
-
-        writer_val.add_scalars('ep/val_accuracy', {"top1": val_accuracy_list[0],
-                                                   "top3": val_accuracy_list[1],
-                                                   "top5": val_accuracy_list[2]
-                                                   }, epoch)
 
         # save check_point
         is_best = val_acc > best_acc
@@ -51,9 +41,9 @@ def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_lo
                          'optimizer':  optimizer.state_dict(),
                          'iteration':  iteration},
                         is_best,
-                        model_path=model_path)
+                        model_path=args.model_path)
 
-        with open(os.path.join(model_path, "training_state.log"), 'a') as f:
+        with open(os.path.join(args.model_path, "training_state.log"), 'a') as f:
             f.write(
                 "Epoch: {:4} | Acc Train: {:1.4f} | Acc Val: {:1.4f} | Best Acc Val: {:1.4f} | "
                 "Best Epoch: {:4}\n".format(epoch + 1, train_acc, val_acc, best_acc, best_epoch + 1))
@@ -205,8 +195,8 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
         tr_stats["time_memory_update"].update(time.perf_counter() - start_time)
 
         # Calculate Accuracies
-        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb, (1, 3, 5))
-        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk, (1, 3, 5))
+        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb, (1, 3, 4))
+        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk, (1, 3, 4))
 
         tr_stats["accuracy_sk"]["top1"].update(top1_sk.item(), batch_size)
         tr_stats["accuracy_sk"]["top3"].update(top3_sk.item(), batch_size)
@@ -337,7 +327,8 @@ def print_stats_timings_mem_contrast(tr_stats):
         f'Memory Selection: {tr_stats["time_memory_selection"].val:.4f}s | '
         f'Forward: {tr_stats["time_forward"].val:.4f}s | '
         f'Backward: {tr_stats["time_backward"].val:.4f}s | '
-        f'Memory Update: {tr_stats["time_memory_update"].val:.4f}s')
+        f'Memory Update: {tr_stats["time_memory_update"].val:.4f}s | '
+        f'All: {tr_stats["time_all"].val:.4f}s')
 
 
 def print_tr_stats_iteration_mem_contrast(stats: dict, epoch, idx, batch_count, duration):
@@ -382,7 +373,7 @@ def calculate_statistics_mem_contrast(rep_vid: torch.Tensor, rep_sk: torch.Tenso
     tr_stats["cv_rep_sim_m"].update(cross_view_sim_m.item(), batch_size)
     tr_stats["cv_rep_sim_s"].update(cross_view_sim_s.item(), batch_size)
 
-    # Assuming that the batches are random, thid dealigns matching views, making the new pairing random.
+    # Assuming that the batches are random, this dealigns matching views, making the new pairing random.
     # This provides a baseline for the similarity of random representations.
     rand_rep_sk = rep_sk.roll(shifts=1, dims=0)  # TODO: Check if copy or changed tensor
     cross_view_rand_sim = torch.sum(rep_vid * rand_rep_sk, dim=1)

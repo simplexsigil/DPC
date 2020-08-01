@@ -501,7 +501,7 @@ class Kinetics400_full_3d(data.Dataset):
                  sub_sample_limit=None,
                  use_cache=False,
                  cache_folder="cache",
-                 sample_discretization=60):
+                 sampling_shift=60):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -511,7 +511,7 @@ class Kinetics400_full_3d(data.Dataset):
 
         self.use_skeleton = skele_motion_root is not None
 
-        self.sample_discretization = sample_discretization
+        self.sampling_shift = sampling_shift
 
         tqdm.pandas(mininterval=0.5)
 
@@ -581,10 +581,10 @@ class Kinetics400_full_3d(data.Dataset):
 
         print("Remaining videos in mode {}: {}".format(self.split, len(self.sample_info)))
 
-        if sample_discretization is not None:
+        if sampling_shift is not None:
             print(f"Subsampling videos to clips of length {seq_len}. \n"
-                  f"Shifting by {sample_discretization} frames on each subsample. This may take a while.")
-            self.sample_info = kdu.subsample_discretely(self.sample_info, sample_discretization, seq_len=seq_len,
+                  f"Shifting by {sampling_shift} frames on each subsample. This may take a while.")
+            self.sample_info = kdu.subsample_discretely(self.sample_info, sampling_shift, seq_len=seq_len,
                                                         downsample=downsample)
 
             print(f"Generated {len(self.sample_info)} subsamples.")
@@ -630,11 +630,12 @@ class Kinetics400_full_3d(data.Dataset):
         st_frame = sample["start_frame"] if "start_frame" in sample.index else None
 
         frame_indices = kdu.idx_sampler(v_len, self.seq_len, self.downsample, sample["path"],
-                                        self.sample_discretization, st_frame)
+                                        self.sampling_shift, st_frame)
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
 
-        seq = [kdu.pil_loader(os.path.join(sample["path"], file_name_template.format(i + 1))) for i in frame_indices]
+        seq = [kdu.pil_loader(os.path.join(sample["path"], file_name_template.format(i + 1))) for i in
+               frame_indices[::4]]
 
         t_seq = self.transform(seq)  # apply same transform
 
@@ -644,11 +645,7 @@ class Kinetics400_full_3d(data.Dataset):
         t_seq = torch.stack(t_seq, 0)
 
         # One Tensor of shape (C, self.seq_len, H, W)
-        t_seq = t_seq.view(self.seq_len, C, H, W).transpose(0, 1)
-
-        # if (t_seq == float('inf')).any() or (t_seq != t_seq).any():
-        #     print("Image tensor for {} was nan or inf. Converting.".format(sample["id"]))
-        #     t_seq[t_seq != t_seq] = 0
+        t_seq = t_seq.transpose(0, 1)
 
         if self.use_skeleton:
             sk_seq = kdu.select_skeleton_seqs(sk_seq, frame_indices)
@@ -660,10 +657,6 @@ class Kinetics400_full_3d(data.Dataset):
             # This is transposed, so we can split the image into blocks during training.
             sk_seq = sk_seq.transpose(1, 2)
             sk_seq = sk_seq.transpose(2, 3).transpose(1, 2)  # (sk_Bo, C, T, J)
-
-            # if (sk_seq == float('inf')).any() or (sk_seq != sk_seq).any():
-            #     print("Image tensor for {} was nan or inf. Converting.".format(sample["id"]))
-            #     sk_seq[sk_seq != sk_seq] = 0
 
             if self.return_label:
                 label = torch.tensor([sample["action"]], dtype=torch.long)

@@ -4,6 +4,7 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 sys.path.append('../backbone')
 from select_backbone import select_resnet
@@ -101,65 +102,46 @@ class SkeleContrast(nn.Module):
     '''Module which performs contrastive learning by matching extracted feature
     vectors from the skele-motion skeleton representation and features extracted from RGB videos with a Resnet 18.'''
 
-    def __init__(self, img_dim, seq_len=30, network='resnet18',
+    def __init__(self, img_dim, seq_len=30, vid_backbone='resnet18',
                  representation_size=1024, score_function="dot", contrast_type="cross", debug=False):
         super(SkeleContrast, self).__init__()
         torch.cuda.manual_seed(233)
         print('Using SkeleContrast model.')
         self.score_function = score_function
-        self.sample_size = img_dim
+        self.vid_dim = img_dim
         self.seq_len = seq_len
-        self.last_duration = int(math.ceil(seq_len / 4))  # This is the sequence length after using the backbone
-        self.last_size = int(math.ceil(img_dim / 32))
-        # print('final feature map has size %dx%d' % (self.last_size, self.last_size))
+
+        self.vid_backbone_name = vid_backbone
 
         self.contrast_type = contrast_type
         self.debug = debug
 
-        self.backbone, self.param = select_resnet(network, track_running_stats=False)
-        # torchvision.models.video.r2plus1d_18(pretrained=False, progress=True, **kwargs)
+        if "resnet" in vid_backbone:
+            self.last_duration = int(math.ceil(seq_len / 4))  # This is the sequence length after using the backbone
+            self.last_size = int(math.ceil(self.vid_dim / 32))  # Final feature map has size (last_size, last_size)
 
-        self.param['num_layers'] = 1  # param for GRU
-        self.param['hidden_size'] = self.param['feature_size']  # param for GRU
+            self.backbone, self.param = select_resnet(vid_backbone, track_running_stats=False)
+            self.param['num_layers'] = 1  # param for GRU
+            self.param['hidden_size'] = self.param['feature_size']  # param for GRU
+
+            self.dpc_feature_conversion = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(4096, self.crossm_vector_length),
+                )
+
+            self._initialize_weights(self.dpc_feature_conversion)
+
+        elif "r2+1d" in vid_backbone:
+            if vid_backbone == "r2+1d18":
+                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=512)
+            else:
+                raise ValueError
 
         self.crossm_vector_length = representation_size
 
-        self.dpc_feature_conversion = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(4096, self.crossm_vector_length),
-            )
-
         self.skele_motion_backbone = SkeleMotionBackbone(self.crossm_vector_length)
 
-        # self.skele_motion_backbone = nn.Sequential(
-        #     nn.Conv2d(in_channels=6, out_channels=16, kernel_size=(3, 3), stride=1),
-        #     # nn.BatchNorm2d(16),
-        #     nn.ReLU(),
-        #     nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(3, 3)),
-        #     nn.MaxPool2d(3, stride=1),
-        #     nn.ReLU(),
-        #     nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 5)),
-        #     nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
-        #     # nn.BatchNorm2d(32),
-        #     nn.ReLU(),
-        #     nn.Conv2d(in_channels=32, out_channels=64, kernel_size=(3, 3)),
-        #     nn.MaxPool2d(kernel_size=(3, 3), stride=(2, 2)),
-        #     # nn.BatchNorm2d(64),
-        #     nn.ReLU(),
-        #     nn.Flatten(),
-        #     nn.Linear(in_features=1536, out_features=self.crossm_vector_length),
-        #     nn.ReLU(),
-        #     # nn.Dropout(p=0.5),
-        #     nn.Linear(in_features=self.crossm_vector_length, out_features=self.crossm_vector_length),
-        #     )
-
-        # for name, param in self.skele_motion_backbone.named_parameters():
-        #     # if the param is from a linear and is a bias
-        #     if "weight" in name:
-        #         param.register_hook(alarm)
-
         self.mask = None
-        self._initialize_weights(self.dpc_feature_conversion)
         self._initialize_weights(self.skele_motion_backbone)
 
     def _forward_sk(self, block_sk):
@@ -182,21 +164,22 @@ class SkeleContrast(nn.Module):
         ### extract feature ###
         (B, C, SL, H, W) = block_rgb.shape
 
-        # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
+        # For the backbone, first dimension is the  batch size -> Blocks are calculated separately.
         feature = self.backbone(block_rgb)  # (B, 256, 2, 4, 4)
         del block_rgb
 
-        # Performs average pooling on the sequence length after the backbone -> averaging over time.
-        feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-        feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
+        if "resnet" in self.vid_backbone_name:
+            # Performs average pooling on the sequence length after the backbone -> averaging over time.
+            feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
+            feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
 
-        feature = torch.flatten(feature, start_dim=1, end_dim=-1)
+            feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
-        feature = self.dpc_feature_conversion(feature)
+            feature = self.dpc_feature_conversion(feature)
 
         return feature
 
-    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None):
+    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None, no_score=False):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
@@ -219,6 +202,9 @@ class SkeleContrast(nn.Module):
 
         pred_rgb = pred_rgb / torch.norm(pred_rgb, dim=1, keepdim=True)
         pred_sk = pred_sk / torch.norm(pred_sk, dim=1, keepdim=True)
+
+        if no_score:
+            return pred_rgb, pred_sk
 
         if (mem_vid is None):
             # This uses batchwise contrast.

@@ -373,10 +373,26 @@ class ToTensor:
 
 
 class Normalize:
-    def __init__(self, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    def __init__(self, mean=(0.43216, 0.394666, 0.37645), std=(0.22803, 0.22145, 0.216989)):
         self.mean = mean
         self.std = std
 
     def __call__(self, imgmap):
         normalize = transforms.Normalize(mean=self.mean, std=self.std)
         return [normalize(i) for i in imgmap]
+
+
+class Denormalize:
+    def __init__(self, mean=(0.43216, 0.394666, 0.37645), std=(0.22803, 0.22145, 0.216989)):
+        self.mean = mean
+        self.std = std
+        self.inv_mean = [-mean[i] / std[i] for i in range(3)]
+        self.inv_std = [1 / i for i in std]
+
+    def __call__(self, imgmap):
+        # TODO: make decision based on input type instead of the extra method for tensors.
+        normalize = transforms.Normalize(mean=self.inv_mean, std=self.inv_std)
+        return [normalize(i) for i in imgmap]
+
+    def denormalize(self, img):
+        return transforms.Normalize(mean=self.inv_mean, std=self.inv_std)(img)
