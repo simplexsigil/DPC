@@ -85,7 +85,8 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_score=True)
 
         # It is noticeably slower to calculate scores outside of the forward function.
-        score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function)
+        score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function,
+                                               temp_tao=args.temperature)
 
         targets = list(range(len(score)))
         targets = torch.tensor(targets, requires_grad=False, dtype=torch.long).to(repr_vid.device)
