@@ -1,11 +1,11 @@
+import argparse
 import os
+import re
 import sys
 import time
-import argparse
-import re
-import numpy as np
-from tqdm import tqdm
+
 from tensorboardX import SummaryWriter
+from tqdm import tqdm
 
 sys.path.insert(0, '../utils')
 sys.path.insert(0, '../backbone')
@@ -13,15 +13,15 @@ from dataset_3d_lc import UCF101_3d, HMDB51_3d
 from model_3d_lc import *
 from resnet_2d3d import neq_load_customized
 from augmentation import *
-from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, denorm, calc_accuracy
+from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
+    write_out_images
 from datetime import datetime
 
 import torch
 import torch.optim as optim
 from torch.utils import data
 import torch.nn as nn
-from torchvision import datasets, models, transforms
-import torchvision.utils as vutils
+from torchvision import transforms
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--net', default='resnet18', type=str)
@@ -33,12 +33,14 @@ parser.add_argument('--num_seq', default=1, type=int)
 parser.add_argument('--num_class', default=51, type=int)
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--batch_size', default=20, type=int)
+parser.add_argument('--representation_size', default=128, type=int)
+parser.add_argument('--batch_size', default=10, type=int)
 parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
 parser.add_argument('--resume', default='', type=str)
-parser.add_argument('--pretrain', default='/home/david/workspaces/cvhci/DPC/dpc/20200613221038_training_skelcont/nturgbd-128_r18_skelcont_bs40_len30_ds1_train-all/model/model_best_epoch36.pth.tar', type=str)
+parser.add_argument('--pretrain',
+                    default='/home/david/workspaces/cvhci/DPC/dpc/training_logs/2020-07-30_21-35-11_training_exp-000/model/model_min_val_loss_ep235.pth.tar',
+                    type=str)
 parser.add_argument('--test', default='', type=str)
 parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
@@ -184,7 +186,7 @@ def main():
             Scale(size=(args.img_dim, args.img_dim)),
             ToTensor(),
             Normalize()
-        ])
+            ])
         test_loader = get_data(transform, 'test')
         test_loss, test_acc = test(test_loader, model)
         sys.exit()
@@ -228,7 +230,7 @@ def main():
         ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=0.3, consistent=True),
         ToTensor(),
         Normalize()
-    ])
+        ])
     val_transform = transforms.Compose([
         RandomSizedCrop(consistent=True, size=224, p=0.3),
         Scale(size=(args.img_dim, args.img_dim)),
@@ -236,14 +238,13 @@ def main():
         ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3, consistent=True),
         ToTensor(),
         Normalize()
-    ])
+        ])
 
     train_loader = get_data(transform, 'train')
     val_loader = get_data(val_transform, 'val')
 
     # setup tools
     global de_normalize;
-    de_normalize = denorm()
     global img_path;
     img_path, model_path = set_path(args)
     global writer_train
@@ -269,13 +270,13 @@ def main():
         is_best = val_acc > best_acc
         best_acc = max(val_acc, best_acc)
         save_checkpoint({
-            'epoch': epoch + 1,
-            'net': args.net,
+            'epoch':      epoch + 1,
+            'net':        args.net,
             'state_dict': model.state_dict(),
-            'best_acc': best_acc,
-            'optimizer': optimizer.state_dict(),
-            'iteration': iteration
-        }, is_best, model_path=model_path)
+            'best_acc':   best_acc,
+            'optimizer':  optimizer.state_dict(),
+            'iteration':  iteration
+            }, is_best, model_path=model_path)
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -293,7 +294,7 @@ def train(data_loader, model, optimizer, epoch):
 
     start_time = time.perf_counter()
 
-    for idx, (input_seq, target) in enumerate(data_loader):
+    for idx, (vid_seq, target) in enumerate(data_loader):
         tic = time.time()
 
         stop_time = time.perf_counter()  # Timing data loading
@@ -301,7 +302,7 @@ def train(data_loader, model, optimizer, epoch):
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
-        input_seq = input_seq.to(cuda)
+        vid_seq = vid_seq.to(cuda)
 
         target = target.to(cuda)
 
@@ -311,18 +312,13 @@ def train(data_loader, model, optimizer, epoch):
 
         start_time = time.perf_counter()  # Timing calculation
 
-        B = input_seq.size(0)
-        output = model(input_seq)
+        B = vid_seq.size(0)
+        output = model(vid_seq)
 
-        # visualize
-        if (iteration == 0) or (iteration == args.print_freq):
-            if B > 2: input_seq = input_seq[0:2, :]
-            writer_train.add_image('input_seq',
-                                   de_normalize(vutils.make_grid(
-                                       input_seq.transpose(2, 3).contiguous().view(-1, 3, args.img_dim, args.img_dim),
-                                       nrow=args.num_seq * args.seq_len)),
-                                   iteration)
-        del input_seq
+        # Visualize images for tensorboard.
+        if iteration == 0:
+            write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
+        del vid_seq
 
         [_, N, D] = output.size()
         output = output.view(B * N, D)
@@ -368,7 +364,7 @@ def train(data_loader, model, optimizer, epoch):
     print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
         sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
         sum(calculation_times) / len(calculation_times)
-    ))
+        ))
 
     return losses.local_avg, accuracy.local_avg
 

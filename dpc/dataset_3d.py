@@ -322,13 +322,14 @@ class KineticsDatasetUtils(DatasetUtils):
         return kdu.action_dict_decode[action_code] if zero_indexed else kdu.action_dict_decode[action_code - 1]
 
     @staticmethod
-    def read_video_info(video_info_csv, extract_infos=True, max_samples=None, worker_count=None) -> pd.DataFrame:
+    def read_video_info(video_info_csv, extract_infos=True, max_samples=None, worker_count=None,
+                        random_state=42) -> pd.DataFrame:
         kdu = KineticsDatasetUtils
 
         sample_infos = pd.read_csv(video_info_csv, header=0, names=["path", "frame_count"])
 
         if max_samples is not None:
-            sample_infos = sample_infos.sample(min(max_samples, len(sample_infos)))
+            sample_infos = sample_infos.sample(min(max_samples, len(sample_infos)), random_state=random_state)
 
         if extract_infos:
             if worker_count == 0:
@@ -336,10 +337,10 @@ class KineticsDatasetUtils(DatasetUtils):
             else:
                 procs = mp.cpu_count() if worker_count is None else worker_count
                 print("Using multiprocessing with {} processes.".format(procs))
-                df_split = np.array_split(sample_infos, procs)
+                df_splits = np.array_split(sample_infos, procs)
                 pool = mp.Pool(procs)
 
-                sample_infos = pd.concat(pool.map(kdu.extract_infos, df_split))
+                sample_infos = pd.concat(pool.map(kdu.extract_infos, df_splits))
 
                 pool.close()
                 pool.join()
@@ -365,7 +366,6 @@ class KineticsDatasetUtils(DatasetUtils):
                                                   "time_start": np.dtype("uint32"),
                                                   "time_end":   np.dtype("uint32")})
 
-        # If necessary, speedup could be made with the dask framework.
         for row in tqdm(sample_infos.itertuples(), total=len(sample_infos)):
             idx = row.Index
             path = row.path
@@ -501,7 +501,8 @@ class Kinetics400_full_3d(data.Dataset):
                  sub_sample_limit=None,
                  use_cache=False,
                  cache_folder="cache",
-                 sampling_shift=60):
+                 sampling_shift=60,
+                 random_state=42):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -524,7 +525,7 @@ class Kinetics400_full_3d(data.Dataset):
 
         start_time = time.perf_counter()
         print("Loading and preparing video info. This might take time.")
-        self.sample_info = kdu.read_video_info(video_info, max_samples=sample_limit)
+        self.sample_info = kdu.read_video_info(video_info, max_samples=sample_limit, random_state=random_state)
         stop_time = time.perf_counter()
 
         print("Loaded video info ({} s)".format(stop_time - start_time))

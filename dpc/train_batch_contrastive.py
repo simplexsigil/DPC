@@ -7,9 +7,7 @@ from utils import AverageMeter, calc_topk_accuracy, write_out_images, write_out_
 
 
 def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                  args, cuda_device, best_acc=0.0, best_epoch=0):
-    iteration = args.start_epoch * len(train_loader)  # In case we are resuming.
-
+                  args, cuda_device, best_acc=0.0, best_epoch=0, iteration=0):
     # Main loop
     for epoch in range(args.start_epoch, args.epochs):
         iteration, train_loss, train_acc = train_skvid_batch_contrast(train_loader, model, optimizer, criterion,
@@ -18,8 +16,9 @@ def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_
         val_loss, val_acc = validate(val_loader, model, criterion, cuda_device,
                                      epoch, args, writer_val)
 
-        best_acc = val_acc if val_acc > best_acc else best_acc
-        best_epoch = epoch if val_acc > best_acc else best_epoch
+        is_best = val_acc > best_acc
+        best_acc = val_acc if is_best else best_acc
+        best_epoch = epoch if is_best else best_epoch
 
         write_out_checkpoint(epoch, iteration, model, optimizer, args, train_loss, train_acc, val_loss, val_acc,
                              best_acc,
@@ -209,7 +208,7 @@ def print_tr_stats_loc_avg(stats: dict, epoch, idx, batch_count, duration):
           f'top1 {stats["accuracy"]["top1"].local_avg:.4f} | '
           f'top3 {stats["accuracy"]["top3"].local_avg:.4f} | '
           f'top5 {stats["accuracy"]["top5"].local_avg:.4f} | '
-          f'T:{duration:.2f}\n')
+          f'T:{duration:.2f}')
 
 
 def print_tr_stats_timings_avg(tr_stats):
@@ -290,7 +289,7 @@ def print_val_avg(val_stats, epoch, args):
           f'Acc: '
           f'top1 {val_stats["accuracy"]["top1"].avg:.4f}; '
           f'top3 {val_stats["accuracy"]["top3"].avg:.4f}; '
-          f'top5 {val_stats["accuracy"]["top5"].avg:.4f} \t')
+          f'top5 {val_stats["accuracy"]["top5"].avg:.4f}\n')
 
 
 def write_val_stats_avg(val_stats, writer_val, epoch):

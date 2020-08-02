@@ -409,7 +409,8 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
                  split_mode="perc",
                  split_frac=0.1,
                  sample_limit=None,
-                 sample_discretion=45):
+                 sample_discretion=45,
+                 random_state=42):
         self.split = split
         self.split_mode = split_mode
         self.transform = transform
@@ -428,7 +429,7 @@ class NTURGBD_3D(data.Dataset):  # Todo: introduce csv selection into parse args
         if split_mode == "perc":
             print("Train/Val ratio: {}/{}".format(1 - split_frac, split_frac))
 
-        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit)
+        self.sample_info = ndu.read_video_info(nturgbd_video_info, max_samples=sample_limit, random_state=random_state)
 
         min_frame_count = self.seq_len * self.downsample
 

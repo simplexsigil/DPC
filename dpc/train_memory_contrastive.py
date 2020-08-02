@@ -10,11 +10,9 @@ from utils import AverageMeter, write_out_images, calc_topk_accuracy, save_check
 
 
 def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                               args, cuda_device, best_acc=0.0, best_epoch=0):
+                               args, cuda_device, best_acc=0.0, best_epoch=0, iteration=0):
     memories, mem_queue = initialize_memories(len(train_loader.dataset), args.representation_size, args.memory_contrast,
                                               len(args.gpu), args.batch_size)
-
-    iteration = args.start_epoch * len(train_loader)  # In case we are resuming.
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):

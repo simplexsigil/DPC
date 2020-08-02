@@ -165,13 +165,13 @@ def main():
     if args.resume:  # Resume a training which was interrupted.
         model, optimizer, start_epoch, iteration, best_acc, lr = prepare_on_resume(model, optimizer,
                                                                                    None if args.reset_lr else args.lr,
-                                                                                   args.resume)
+                                                                                   args.resume, args)
         args.lr = lr
 
     elif args.pretrain:  # Load a pretrained model
         # The difference to resuming: We do not expect the same model.
         # In this case, only some of the pretrained weights are used.
-        model = prepare_on_pretrain(model, args.pretrain)
+        model = prepare_on_pretrain(model, args.pretrain, args)
     else:
         pass  # Normal case, no resuming, not pretraining.
 
@@ -186,16 +186,16 @@ def main():
 
     if args.memory_contrast is not None:
         tmc.training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch)
+                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch, iteration=iteration)
     else:
         tbc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                          args, cuda_device, best_acc=best_acc, best_epoch=start_epoch)
+                          args, cuda_device, best_acc=best_acc, best_epoch=start_epoch, iteration=iteration)
 
 
 def check_and_prepare_cuda(device_ids):
     # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in device_ids])
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(dev_id) for dev_id in device_ids])
 
     print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
     print('Available device count: {}'.format(torch.cuda.device_count()))
@@ -243,7 +243,7 @@ def check_and_prepare_parameters(model, training_focus):
     print('=================================\n')
 
 
-def prepare_on_resume(model, optimizer, lr, resume_file):
+def prepare_on_resume(model, optimizer, lr, resume_file, args):
     if not os.path.isfile(resume_file):
         print("####\n[Warning] no checkpoint found at '{}'\n####".format(args.resume))
         raise FileNotFoundError
@@ -272,7 +272,7 @@ def prepare_on_resume(model, optimizer, lr, resume_file):
         return model, optimizer, epoch, iteration, best_acc, lr
 
 
-def prepare_on_pretrain(model, pretrain_file):
+def prepare_on_pretrain(model, pretrain_file, args):
     if not os.path.isfile(pretrain_file):
         print("=> no checkpoint found at '{}'".format(args.pretrain))
         raise FileNotFoundError
@@ -298,7 +298,7 @@ def prepare_augmentations(augmentation_settings, args):
             ToTensor(),
             Normalize()
             ])
-    elif args.dataset == 'nturgbd' or args.dataset == 'kinetics400':  # designed for nturgbd, short size=150, rand crop to 128x128
+    elif args.dataset == 'nturgbd' or args.dataset == 'kinetics400':
         transform = transforms.Compose([
             RandomRotation(degree=augmentation_settings["rot_range"]),
             RandomSizedCrop(size=args.img_dim, crop_area=augmentation_settings["crop_arr_range"], consistent=True),
@@ -314,7 +314,7 @@ def prepare_augmentations(augmentation_settings, args):
     return transform
 
 
-def get_data(transform, mode='train', args=None, augmentation_settings=None):
+def get_data(transform, mode='train', args=None, augmentation_settings=None, random_state=42):
     if not args.use_dali or mode == "val":
         if args.dataset == 'kinetics400':
             dataset = Kinetics400_full_3d(split=mode,
@@ -327,7 +327,8 @@ def get_data(transform, mode='train', args=None, augmentation_settings=None):
                                           sample_limit=args.max_samples,
                                           sub_sample_limit=args.max_sub_samples,
                                           sampling_shift=args.sampling_shift,
-                                          use_cache=not args.no_cache)
+                                          use_cache=not args.no_cache,
+                                          random_state=random_state)
         elif args.dataset == 'ucf101':
             dataset = UCF101_3d(mode=mode,
                                 transform=transform,
@@ -342,7 +343,8 @@ def get_data(transform, mode='train', args=None, augmentation_settings=None):
                                  nturgbd_video_info=args.nturgbd_video_info,
                                  skele_motion_root=args.nturgbd_skele_motion,
                                  split_mode=args.split_mode,
-                                 sample_limit=args.max_samples)
+                                 sample_limit=args.max_samples,
+                                 random_state=random_state)
         else:
             raise ValueError('dataset not supported')
 
@@ -390,8 +392,10 @@ def set_path(args, mode="training"):
 
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
+    if not os.path.exists(img_path):
+        os.makedirs(img_path)
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
 
     return img_path, model_path, exp_path
 
@@ -402,12 +406,8 @@ def get_summary_writers(img_path, prefix):
     val_name = tboard_str.format(prefix=prefix, mode="val", time=time_str)
     train_name = tboard_str.format(prefix=prefix, mode="train", time=time_str)
 
-    try:  # old version
-        writer_val = SummaryWriter(log_dir=os.path.join(img_path, val_name))
-        writer_train = SummaryWriter(log_dir=os.path.join(img_path, train_name))
-    except:  # v1.7
-        writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
-        writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
+    writer_val = SummaryWriter(logdir=os.path.join(img_path, val_name))
+    writer_train = SummaryWriter(logdir=os.path.join(img_path, train_name))
 
     print(f"\n### Tensorboard Path###\n{img_path}\n")
 

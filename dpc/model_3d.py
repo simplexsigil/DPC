@@ -179,7 +179,8 @@ class SkeleContrast(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None, no_score=False):
+    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None,
+                no_score=False):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
