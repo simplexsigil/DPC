@@ -25,8 +25,8 @@ import numpy as np
 import torch
 from torch.utils import data
 
-from dataset_3d import DatasetUtils
-from dataset_nturgbd import NTURGBDDatasetUtils
+from datasets.dataset import DatasetUtils
+from datasets.dataset_nturgbd import NTURGBDDatasetUtils
 
 try:
     from nvidia.dali.plugin.pytorch import DALIClassificationIterator

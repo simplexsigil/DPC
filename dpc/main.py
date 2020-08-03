@@ -1,30 +1,17 @@
 import argparse
-import sys
+from datetime import datetime
 
-import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
 
-plt.switch_backend('agg')
-
-sys.path.insert(0, '../utils')
-sys.path.insert(0, '../eval')
-sys.path.insert(0, '../backbone')
-
-from dataset_3d import *
-from dataset_nturgbd import *
-from dataset_nturgbd_dali import *
+import train_batch_contrastive as tbc
+import train_memory_contrastive as tmc
+from augmentation import *
+from dataset_kinetics import Kinetics400Dataset
+from dataset_ucf101 import UCF101Dataset
+from datasets.dataset_nturgbd import *
+from datasets.dataset_nturgbd_dali import *
 from model_3d import *
 from resnet_2d3d import neq_load_customized
-from augmentation import *
-from datetime import datetime
-import re
-
-import torch
-from torch.utils import data
-from torchvision import transforms
-
-import train_memory_contrastive as tmc
-import train_batch_contrastive as tbc
 
 # This way, cuda optimizes for the hardware available, if input size is always equal.
 torch.backends.cudnn.benchmark = True
@@ -36,31 +23,30 @@ parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 
-parser.add_argument('--dataset', default='nturgbd', type=str)
-parser.add_argument('--model', default='skelcont', type=str)
-parser.add_argument('--rgb_net', default='r2+1d18', type=str)
-
 parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=15, type=int)
-parser.add_argument('--max_samples', default=None, type=int, help='Sample instance limit.')
+
+parser.add_argument('--dataset', default='nturgbd', type=str)
+parser.add_argument('--split-mode', default="perc", type=str)
+parser.add_argument('--split-test-frac', default=0.2, type=float)
 
 parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for subsamples from available samples.')
+parser.add_argument('--max_samples', default=None, type=int, help='Sample instance limit.')
 parser.add_argument('--max_sub_samples', default=None, type=int, help='Limit for subsamples from available samples.')
+
+parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
+parser.add_argument('--ds_vid', default=1, type=int, help='Video downsampling rate')
+parser.add_argument('--img_dim', default=224, type=int)
+
+parser.add_argument('--model', default='skelcont', type=str)
+parser.add_argument('--rgb_net', default='r2+1d18', type=str)
+parser.add_argument('--score_function', default='cos-nt-xent', type=str)
+parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--representation_size', default=512, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
-
-parser.add_argument('--split-mode', default="perc", type=str)
-parser.add_argument('--split-test-frac', default=0.2, type=float)
-
-parser.add_argument('--img_dim', default=224, type=int)
-parser.add_argument('--seq_len', default=30, type=int, help='number of frames in a video block')
-parser.add_argument('--ds', default=1, type=int, help='frame downsampling rate')
-
-parser.add_argument('--score_function', default='cos-nt-xent', type=str)
-parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--representation_size', default=512, type=int)
 
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
@@ -186,7 +172,8 @@ def main():
 
     if args.memory_contrast is not None:
         tmc.training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch, iteration=iteration)
+                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch,
+                                       iteration=iteration)
     else:
         tbc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
                           args, cuda_device, best_acc=best_acc, best_epoch=start_epoch, iteration=iteration)
@@ -317,34 +304,33 @@ def prepare_augmentations(augmentation_settings, args):
 def get_data(transform, mode='train', args=None, augmentation_settings=None, random_state=42):
     if not args.use_dali or mode == "val":
         if args.dataset == 'kinetics400':
-            dataset = Kinetics400_full_3d(split=mode,
-                                          transform=transform,
-                                          seq_len=args.seq_len,
-                                          downsample=args.ds,
-                                          video_info=args.kinetics_video_info,
-                                          skele_motion_root=args.kinetics_skele_motion,
-                                          split_mode=args.split_mode,
-                                          sample_limit=args.max_samples,
-                                          sub_sample_limit=args.max_sub_samples,
-                                          sampling_shift=args.sampling_shift,
-                                          use_cache=not args.no_cache,
-                                          random_state=random_state)
+            dataset = Kinetics400Dataset(split=mode,
+                                         transform=transform,
+                                         seq_len=args.seq_len,
+                                         downsample_vid=args.ds_vid,
+                                         video_info=args.kinetics_video_info,
+                                         skele_motion_root=args.kinetics_skele_motion,
+                                         split_mode=args.split_mode,
+                                         sample_limit=args.max_samples,
+                                         sub_sample_limit=args.max_sub_samples,
+                                         sampling_shift=args.sampling_shift,
+                                         use_cache=not args.no_cache,
+                                         random_state=random_state)
         elif args.dataset == 'ucf101':
-            dataset = UCF101_3d(mode=mode,
-                                transform=transform,
-                                seq_len=args.seq_len,
-                                num_seq=args.num_seq,
-                                downsample=args.ds)
+            dataset = UCF101Dataset(mode=mode,
+                                    transform=transform,
+                                    seq_len=args.seq_len,
+                                    downsample_vid=args.ds_vid)
         elif args.dataset == 'nturgbd':
-            dataset = NTURGBD_3D(split=mode,
-                                 transform=transform,
-                                 seq_len=args.seq_len,
-                                 downsample=args.ds,
-                                 nturgbd_video_info=args.nturgbd_video_info,
-                                 skele_motion_root=args.nturgbd_skele_motion,
-                                 split_mode=args.split_mode,
-                                 sample_limit=args.max_samples,
-                                 random_state=random_state)
+            dataset = NTURGBDDataset(split=mode,
+                                     transform=transform,
+                                     seq_len=args.seq_len,
+                                     downsample_vid=args.ds_vid,
+                                     nturgbd_video_info=args.nturgbd_video_info,
+                                     skele_motion_root=args.nturgbd_skele_motion,
+                                     split_mode=args.split_mode,
+                                     sample_limit=args.max_samples,
+                                     random_state=random_state)
         else:
             raise ValueError('dataset not supported')
 
@@ -368,7 +354,7 @@ def get_data(transform, mode='train', args=None, augmentation_settings=None, ran
             batch_size=args.batch_size,
             split=mode,
             seq_len=args.seq_len,
-            downsample=args.ds,
+            downsample=args.ds_vid,
             nturgbd_video_info=args.nturgbd_video_info,
             skele_motion_root=args.nturgbd_skele_motion,
             split_mode=args.split_mode,
@@ -429,21 +415,6 @@ def write_settings_file(args, exp_path):
         f.write("\n\n")
 
         f.write(training_description)
-
-
-def rand_self_cos_similarities(x, samples=1000):
-    samples = min(len(x), samples)
-
-    idxs = list(range(samples))
-    random.shuffle(idxs)
-
-    x = x[:samples]
-    y = x[idxs]
-
-    angles = torch.sum(torch.mul(x, y), dim=1)
-    angles = angles.reshape((-1,))
-
-    return angles
 
 
 if __name__ == '__main__':

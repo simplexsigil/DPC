@@ -1,5 +1,4 @@
 import math
-import numpy as np
 import sys
 
 from resnet_2d3d import neq_load_customized
@@ -11,6 +10,7 @@ from convrnn import ConvGRU
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 
 class LC(nn.Module):
@@ -103,7 +103,7 @@ class Resnet18Classifier(nn.Module):
         self.dpc_feature_conversion = nn.Sequential(
             nn.ReLU(),
             nn.Linear(4096, self.crossm_vector_length),
-        )
+            )
 
         self.final_bn_ev = nn.BatchNorm1d(self.crossm_vector_length)
         self.final_bn_ev.weight.data.fill_(1)
@@ -115,7 +115,7 @@ class Resnet18Classifier(nn.Module):
             nn.Linear(self.crossm_vector_length, self.crossm_vector_length),
             nn.ReLU(),
             nn.Linear(self.crossm_vector_length, self.num_class)
-        )
+            )
 
         self._initialize_weights(self.dpc_feature_conversion)
         self._initialize_weights(self.final_fc)
@@ -137,7 +137,8 @@ class Resnet18Classifier(nn.Module):
 
         feature = self.dpc_feature_conversion(feature)
 
-        feature = self.final_bn_ev(feature) # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
+        # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
+        feature = self.final_bn_ev(feature)
         output = self.final_fc(feature).view(B, N, self.num_class)
 
         return output
@@ -149,6 +150,60 @@ class Resnet18Classifier(nn.Module):
             elif 'weight' in name:
                 nn.init.orthogonal_(param, 1)
                 # other resnet weights have been initialized in resnet_3d.py
+
+    def load_weights_state_dict(self, state_dict, model=None):
+        neq_load_customized((self if model is None else model), state_dict, ignore_layer=".*module.final_bn.*")
+
+
+class R2plus1DClassifier(nn.Module):
+    def __init__(self, sample_size, seq_len, backbone='r2+1d18', dropout=0.5, num_class=101, representation_size=512):
+        super(R2plus1DClassifier, self).__init__()
+
+        # noinspection PyUnresolvedReferences
+        torch.cuda.manual_seed(666)
+        self.sample_size = sample_size  # TODO: Remove if not required.
+        self.seq_len = seq_len
+        self.num_class = num_class
+        self.representation_size = representation_size
+
+        if "r2+1d" in backbone:
+            if backbone == "r2+1d18":
+                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=representation_size)
+            else:
+                raise ValueError
+
+        self.final_fc = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(self.representation_size, self.num_class)
+            )
+
+        R2plus1DClassifier._initialize_weights(self.final_fc)
+
+    def forward(self, block):
+        (B, C, SL, H, W) = block.shape  # block: [B, C, SL, W, H] Batch, Channels, Seq Len, Width Height
+
+        feature = self.backbone(block)
+        del block
+
+        output = self.final_fc(feature).view(B, self.num_class)
+
+        return output
+
+    @staticmethod
+    def _initialize_weights(module):
+        for m in module.modules():
+            if isinstance(m, nn.Conv3d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out',
+                                        nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm3d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 
     def load_weights_state_dict(self, state_dict, model=None):
         neq_load_customized((self if model is None else model), state_dict, ignore_layer=".*module.final_bn.*")

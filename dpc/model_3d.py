@@ -133,7 +133,7 @@ class SkeleContrast(nn.Module):
 
         elif "r2+1d" in vid_backbone:
             if vid_backbone == "r2+1d18":
-                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=512)
+                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=representation_size)
             else:
                 raise ValueError
 

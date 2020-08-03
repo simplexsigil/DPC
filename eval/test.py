@@ -1,63 +1,67 @@
 import argparse
 import os
 import re
-import sys
 import time
-
-from tensorboardX import SummaryWriter
-from tqdm import tqdm
-
-sys.path.insert(0, '../utils')
-sys.path.insert(0, '../backbone')
-from dataset_3d_lc import UCF101_3d, HMDB51_3d
-from model_3d_lc import *
-from resnet_2d3d import neq_load_customized
-from augmentation import *
-from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
-    write_out_images
 from datetime import datetime
 
-import torch
 import torch.optim as optim
+from tensorboardX import SummaryWriter
 from torch.utils import data
-import torch.nn as nn
-from torchvision import transforms
+from tqdm import tqdm
+
+from augmentation import *
+from datasets.dataset_hmdb51 import HMDB51Dataset
+from datasets.dataset_ucf101 import UCF101Dataset
+from model_3d_lc import *
+from resnet_2d3d import neq_load_customized
+from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
+    write_out_images
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--net', default='resnet18', type=str)
-parser.add_argument('--model', default='lc_cont', type=str)
+parser.add_argument('--prefix', default='tmp_r21d', type=str)
+
+parser.add_argument('--gpu', default=[0], type=int, nargs='+')
+parser.add_argument('--num_workers', default=16, type=int)
+
+parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
+parser.add_argument('--batch_size', default=1, type=int)
+
 parser.add_argument('--dataset', default='hmdb51', type=str)
 parser.add_argument('--split', default=1, type=int)
+parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for subsamples from available samples.')
+
 parser.add_argument('--seq_len', default=30, type=int)
-parser.add_argument('--num_seq', default=1, type=int)
-parser.add_argument('--num_class', default=51, type=int)
+parser.add_argument('--ds', default=2, type=int)
+parser.add_argument('--img_dim', default=244, type=int)
+
+parser.add_argument('--model', default='lc_r2+1d', type=str, choices=["lc_cont", "lc_r2+1d"])
+parser.add_argument('--net', default='r2+1d18', type=str)
 parser.add_argument('--dropout', default=0.5, type=float)
-parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--representation_size', default=128, type=int)
-parser.add_argument('--batch_size', default=10, type=int)
+parser.add_argument('--representation_size', default=512, type=int)
+parser.add_argument('--num_class', default=51, type=int)
+
 parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
-parser.add_argument('--resume', default='', type=str)
-parser.add_argument('--pretrain',
-                    default='/home/david/workspaces/cvhci/DPC/dpc/training_logs/2020-07-30_21-35-11_training_exp-000/model/model_min_val_loss_ep235.pth.tar',
-                    type=str)
-parser.add_argument('--test', default='', type=str)
-parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-parser.add_argument('--gpu', default=[0], type=int, nargs='+')
-parser.add_argument('--print_freq', default=5, type=int)
-parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--train_what', default='last_only', type=str, help='Train what parameters?')
-parser.add_argument('--prefix', default='tmp_cont', type=str)
-parser.add_argument('--img_dim', default=128, type=int)
-parser.add_argument('--num_workers', default=16, type=int)
+
+parser.add_argument('--print_freq', default=5, type=int)
+
+parser.add_argument('--pretrain',
+                    default='/home/david/temp/training_logs/test_temp/2020-08-01_02-46-13_training_exp-300-r21dbc/model/model_best_ep13.pth.tar',
+                    type=str)
+
+parser.add_argument('--resume', default='', type=str)
+parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
+parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
+
+parser.add_argument('--test', default='', type=str)
 
 global start_time
 global stop_time
 
 
 def main():
-    global args;
+    global args
     args = parser.parse_args()
 
     print("Startup parameters:")
@@ -107,6 +111,14 @@ def main():
                                    num_class=args.num_class,
                                    dropout=args.dropout,
                                    crossm_vector_length=args.representation_size
+                                   )
+    elif args.model == "lc_r2+1d":
+        model = R2plus1DClassifier(sample_size=args.img_dim,
+                                   seq_len=args.seq_len,
+                                   backbone=args.net,
+                                   num_class=args.num_class,
+                                   dropout=args.dropout,
+                                   representation_size=args.representation_size
                                    )
     else:
         raise ValueError('wrong model!')
@@ -217,6 +229,7 @@ def main():
         elif os.path.isfile(args.pretrain):
             print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
             checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
+
             model.module.load_weights_state_dict(checkpoint['state_dict'], model=model)
             print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
         else:
@@ -244,8 +257,8 @@ def main():
     val_loader = get_data(val_transform, 'val')
 
     # setup tools
-    global de_normalize;
-    global img_path;
+    global de_normalize
+    global img_path
     img_path, model_path = set_path(args)
     global writer_train
     try:  # old version
@@ -257,8 +270,8 @@ def main():
 
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
-        train_loss, train_acc = train(train_loader, model, optimizer, epoch)
-        val_loss, val_acc = validate(val_loader, model)
+        train_loss, train_acc = train(train_loader, model, optimizer, epoch, args)
+        val_loss, val_acc = validate(val_loader, model, args)
         scheduler.step(epoch)
 
         writer_train.add_scalar('global/loss', train_loss, epoch)
@@ -281,7 +294,7 @@ def main():
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train(data_loader, model, optimizer, epoch):
+def train(data_loader, model, optimizer, epoch, args):
     data_loading_times = []
     cuda_transfer_times = []
     calculation_times = []
@@ -296,6 +309,8 @@ def train(data_loader, model, optimizer, epoch):
 
     for idx, (vid_seq, target) in enumerate(data_loader):
         tic = time.time()
+
+        (batch_size, C, seq_len, H, W) = vid_seq.shape
 
         stop_time = time.perf_counter()  # Timing data loading
         data_loading_times.append(stop_time - start_time)
@@ -312,7 +327,6 @@ def train(data_loader, model, optimizer, epoch):
 
         start_time = time.perf_counter()  # Timing calculation
 
-        B = vid_seq.size(0)
         output = model(vid_seq)
 
         # Visualize images for tensorboard.
@@ -320,15 +334,11 @@ def train(data_loader, model, optimizer, epoch):
             write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
         del vid_seq
 
-        [_, N, D] = output.size()
-        output = output.view(B * N, D)
-        target = target.repeat(1, N).view(-1)
-
         loss = criterion(output, target)
         acc = calc_accuracy(output, target)
 
-        losses.update(loss.item(), B)
-        accuracy.update(acc.item(), B)
+        losses.update(loss.item(), batch_size)
+        accuracy.update(acc.item(), batch_size)
 
         optimizer.zero_grad()
         loss.backward()
@@ -369,7 +379,7 @@ def train(data_loader, model, optimizer, epoch):
     return losses.local_avg, accuracy.local_avg
 
 
-def validate(data_loader, model):
+def validate(data_loader, model, args):
     losses = AverageMeter()
     accuracy = AverageMeter()
     model.eval()
@@ -444,19 +454,17 @@ def get_data(transform, mode='train'):
     print('Loading data for "%s" ...' % mode)
     global dataset
     if args.dataset == 'ucf101':
-        dataset = UCF101_3d(mode=mode,
-                            transform=transform,
-                            seq_len=args.seq_len,
-                            num_seq=args.num_seq,
-                            downsample=args.ds,
-                            which_split=args.split)
+        dataset = UCF101Dataset(mode=mode,
+                                transform=transform,
+                                seq_len=args.seq_len,
+                                downsample_vid=args.ds,
+                                which_split=args.split)
     elif args.dataset == 'hmdb51':
-        dataset = HMDB51_3d(mode=mode,
-                            transform=transform,
-                            seq_len=args.seq_len,
-                            num_seq=args.num_seq,
-                            downsample=args.ds,
-                            which_split=args.split)
+        dataset = HMDB51Dataset(mode=mode,
+                                transform=transform,
+                                seq_len=args.seq_len,
+                                downsample_vid=args.ds,
+                                which_split=args.split)
     else:
         raise ValueError('dataset not supported')
     my_sampler = data.RandomSampler(dataset)
@@ -487,22 +495,20 @@ def get_data(transform, mode='train'):
     return data_loader
 
 
-def set_path(args):
+def set_path(args, mode="training"):
     if args.resume:
         exp_path = os.path.dirname(os.path.dirname(args.resume))
     else:
-        exp_path = 'transfer_logs/{time}_log_{args.prefix}/{args.dataset}-{args.img_dim}-\
-sp{args.split}_{0}_{args.model}_bs{args.batch_size}_\
-lr{1}_wd{args.wd}_ds{args.ds}_seq{args.num_seq}_len{args.seq_len}_\
-dp{args.dropout}_train-{args.train_what}{2}'.format(
-            'r%s' % args.net[6::], \
-            args.old_lr if args.old_lr is not None else args.lr, \
-            '_pt=' + 'pretrained_net' if args.pretrain != "random" else 'untrained_net', \
-            args=args, time=datetime.now().strftime("%Y%m%d%H%M%S"))
+        tm = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        exp_path = f'transfer_logs/{tm}_{mode}_{args.prefix}'
+
     img_path = os.path.join(exp_path, 'img')
     model_path = os.path.join(exp_path, 'model')
-    if not os.path.exists(img_path): os.makedirs(img_path)
-    if not os.path.exists(model_path): os.makedirs(model_path)
+    if not os.path.exists(img_path):
+        os.makedirs(img_path)
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
+
     return img_path, model_path
 
 
