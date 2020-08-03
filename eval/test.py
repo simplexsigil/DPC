@@ -321,7 +321,6 @@ def train(data_loader, model, optimizer, epoch, args):
     time_all = time.perf_counter()
 
     for idx, (vid_seq, target) in enumerate(data_loader):
-
         (batch_size, C, seq_len, H, W) = vid_seq.shape
 
         stop_time = time.perf_counter()  # Timing data loading

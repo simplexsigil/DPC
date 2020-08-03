@@ -1,10 +1,13 @@
 import os
+import sys
 
 import pandas as pd
 import torch
 from torch.utils import data
 
-from datasets.dataset import DatasetUtils
+sys.path.insert(0, '../datasets')
+
+from dataset import DatasetUtils
 
 
 class UCF101Dataset(data.Dataset):
