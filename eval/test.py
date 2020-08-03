@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 import time
 from datetime import datetime
 
@@ -8,6 +9,10 @@ import torch.optim as optim
 from tensorboardX import SummaryWriter
 from torch.utils import data
 from tqdm import tqdm
+
+sys.path.insert(0, '../utils')
+sys.path.insert(0, '../backbone')
+sys.path.insert(0, '../datasets')
 
 from augmentation import *
 from datasets.dataset_hmdb51 import HMDB51Dataset
