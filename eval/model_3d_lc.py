@@ -122,8 +122,7 @@ class Resnet18Classifier(nn.Module):
     def forward(self, block):
         # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
         ### extract feature ###
-        (B, N, C, SL, H, W) = block.shape
-        block = block.view(B * N, C, SL, H, W)
+        (B, C, SL, H, W) = block.shape
 
         # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
         feature = self.backbone(block)  # (B * N, 256, 2, 4, 4)
@@ -131,14 +130,14 @@ class Resnet18Classifier(nn.Module):
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-        feature = feature.view(B * N, self.param['feature_size'], self.last_size, self.last_size)
+        feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
         feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
         feature = self.dpc_feature_conversion(feature)
 
         # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
         feature = self.final_bn_ev(feature)
-        output = self.final_fc(feature).view(B, N, self.num_class)
+        output = self.final_fc(feature).view(B, self.num_class)
 
         return output
 
