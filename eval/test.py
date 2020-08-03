@@ -15,8 +15,8 @@ sys.path.insert(0, '../backbone')
 sys.path.insert(0, '../datasets')
 
 from augmentation import *
-from datasets.dataset_hmdb51 import HMDB51Dataset
-from datasets.dataset_ucf101 import UCF101Dataset
+from dataset_hmdb51 import HMDB51Dataset
+from dataset_ucf101 import UCF101Dataset
 from model_3d_lc import *
 from resnet_2d3d import neq_load_customized
 from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
