@@ -34,10 +34,11 @@ parser.add_argument('--batch_size', default=1, type=int)
 parser.add_argument('--dataset', default='hmdb51', type=str)
 parser.add_argument('--split', default=1, type=int)
 parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for subsamples from available samples.')
+parser.add_argument('--max_samples', default=None, type=int, help='Limit for samples.')
 
 parser.add_argument('--seq_len', default=30, type=int)
 parser.add_argument('--ds', default=2, type=int)
-parser.add_argument('--img_dim', default=244, type=int)
+parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='lc_r2+1d', type=str, choices=["lc_cont", "lc_r2+1d"])
 parser.add_argument('--net', default='r2+1d18', type=str)
@@ -276,13 +277,8 @@ def main():
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
         train_loss, train_acc = train(train_loader, model, optimizer, epoch, args)
-        val_loss, val_acc = validate(val_loader, model, args)
+        val_loss, val_acc = validate(val_loader, model, epoch, args)
         scheduler.step(epoch)
-
-        writer_train.add_scalar('global/loss', train_loss, epoch)
-        writer_train.add_scalar('global/accuracy', train_acc, epoch)
-        writer_val.add_scalar('global/loss', val_loss, epoch)
-        writer_val.add_scalar('global/accuracy', val_acc, epoch)
 
         # save check_point
         is_best = val_acc > best_acc
@@ -300,50 +296,67 @@ def main():
 
 
 def train(data_loader, model, optimizer, epoch, args):
-    data_loading_times = []
-    cuda_transfer_times = []
-    calculation_times = []
-    losses = AverageMeter()
-    accuracy = AverageMeter()
+    tr_stats = {"time_data_loading":  AverageMeter(locality=args.print_freq),
+                "time_cuda_transfer": AverageMeter(locality=args.print_freq),
+                "time_forward":       AverageMeter(locality=args.print_freq),
+                "time_backward":      AverageMeter(locality=args.print_freq),
+                "time_all":           AverageMeter(locality=args.print_freq),
+
+                "cv_rep_sim_m":       AverageMeter(locality=args.print_freq),
+                "cv_rep_sim_s":       AverageMeter(locality=args.print_freq),
+                "cv_rand_sim_m":      AverageMeter(locality=args.print_freq),
+                "cv_rand_sim_s":      AverageMeter(locality=args.print_freq),
+
+                "total_loss":         AverageMeter(locality=args.print_freq),
+
+                "accuracy":           AverageMeter(locality=args.print_freq)
+                }
+
     model.train()
     global iteration
     global start_time
     global stop_time
 
     start_time = time.perf_counter()
+    time_all = time.perf_counter()
 
     for idx, (vid_seq, target) in enumerate(data_loader):
-        tic = time.time()
 
         (batch_size, C, seq_len, H, W) = vid_seq.shape
 
         stop_time = time.perf_counter()  # Timing data loading
-        data_loading_times.append(stop_time - start_time)
+        tr_stats["time_data_loading"].update(stop_time - start_time)
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
         vid_seq = vid_seq.to(cuda)
-
         target = target.to(cuda)
 
         stop_time = time.perf_counter()
 
-        cuda_transfer_times.append(stop_time - start_time)
+        tr_stats["time_cuda_transfer"].update(stop_time - start_time)
+
+        # Visualize images for tensorboard.
+        if iteration == 0:
+            write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
 
         start_time = time.perf_counter()  # Timing calculation
 
         output = model(vid_seq)
 
-        # Visualize images for tensorboard.
-        if iteration == 0:
-            write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
         del vid_seq
 
         loss = criterion(output, target)
         acc = calc_accuracy(output, target)
 
-        losses.update(loss.item(), batch_size)
-        accuracy.update(acc.item(), batch_size)
+        stop_time = time.perf_counter()
+
+        tr_stats["time_forward"].update(stop_time - start_time)
+
+        tr_stats["total_loss"].update(loss.item(), batch_size)
+        tr_stats["accuracy"].update(acc.item(), batch_size)
+
+        start_time = time.perf_counter()  # Timing calculation
 
         optimizer.zero_grad()
         loss.backward()
@@ -353,61 +366,55 @@ def train(data_loader, model, optimizer, epoch, args):
 
         stop_time = time.perf_counter()
 
-        calculation_times.append(stop_time - start_time)
+        tr_stats["time_backward"].update(stop_time - start_time)
+
+        stop_time = time.perf_counter()
+        tr_stats["time_all"].update(stop_time - time_all)
 
         if idx % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Loss {loss.val:.4f} ({loss.local_avg:.4f})\t'
-                  'Acc: {acc.val:.4f} ({acc.local_avg:.4f}) T:{3:.2f}\t'.format(
-                epoch, idx, len(data_loader), time.time() - tic,
-                loss=losses, acc=accuracy))
+            print(f'Epoch: [{epoch}][{idx}/{len(data_loader)}]\t'
+                  f'Loss {tr_stats["total_loss"].local_avg:.4f}\t'
+                  f'Acc: {tr_stats["accuracy"].local_avg:.4f} T:{tr_stats["time_all"].local_avg:.2f}\t')
 
-            total_weight = 0.0
-            decay_weight = 0.0
-            for m in model.parameters():
-                if m.requires_grad: decay_weight += m.norm(2).data
-                total_weight += m.norm(2).data
-            print('Decay weight / Total weight: %.3f/%.3f' % (decay_weight, total_weight))
+            write_stats_transfer_iteration(tr_stats, writer_train, iteration)
 
-            writer_train.add_scalar('local/loss', losses.val, iteration)
-            writer_train.add_scalar('local/accuracy', accuracy.val, iteration)
+        iteration += 1
 
-            iteration += 1
+        start_time = time.perf_counter()
+        time_all = time.perf_counter()
 
-            start_time = time.perf_counter()
+    print_tr_stats_timings_avg(tr_stats)
+    write_stats_transfer_epoch(tr_stats, writer_train, epoch, mode="Train")
 
-    print("Avg t input loading: {:.4f}; Avg t input to cuda: {:.4f}; Avg t calculation: {:.4f}".format(
-        sum(data_loading_times) / len(data_loading_times), sum(cuda_transfer_times) / len(cuda_transfer_times),
-        sum(calculation_times) / len(calculation_times)
-        ))
-
-    return losses.local_avg, accuracy.local_avg
+    return tr_stats["total_loss"].avg, tr_stats["accuracy"].avg
 
 
-def validate(data_loader, model, args):
-    losses = AverageMeter()
-    accuracy = AverageMeter()
+def validate(data_loader, model, epoch, args):
+    tr_stats = {"total_loss": AverageMeter(locality=args.print_freq),
+                "accuracy":   AverageMeter(locality=args.print_freq)
+                }
+
     model.eval()
     with torch.no_grad():
         for idx, (input_seq, target) in tqdm(enumerate(data_loader), total=len(data_loader)):
             input_seq = input_seq.to(cuda)
             target = target.to(cuda)
-            B = input_seq.size(0)
+            batch_size = input_seq.size(0)
             output = model(input_seq)
-
-            [_, N, D] = output.size()
-            output = output.view(B * N, D)
-            target = target.repeat(1, N).view(-1)
 
             loss = criterion(output, target)
             acc = calc_accuracy(output, target)
 
-            losses.update(loss.item(), B)
-            accuracy.update(acc.item(), B)
+            tr_stats["total_loss"].update(loss.item(), batch_size)
+            tr_stats["accuracy"].update(acc.item(), batch_size)
 
-    print('Loss {loss.avg:.4f}\t'
-          'Acc: {acc.avg:.4f} \t'.format(loss=losses, acc=accuracy))
-    return losses.avg, accuracy.avg
+    write_stats_transfer_epoch(tr_stats, writer_train, epoch, mode="Val")
+
+    print(f'Epoch: [{epoch}] \t'
+          f'Avg Val Loss {tr_stats["total_loss"].avg:.4f}\t'
+          f'Avg Val Acc: {tr_stats["accuracy"].avg:.4f}\t')
+
+    return tr_stats["total_loss"].avg, tr_stats["accuracy"].avg
 
 
 def test(data_loader, model):
@@ -426,8 +433,7 @@ def test(data_loader, model):
             del input_seq
             top1, top5 = calc_topk_accuracy(torch.mean(
                 torch.mean(
-                    nn.functional.softmax(output, 2),
-                    0), 0, keepdim=True),
+                    nn.functional.softmax(output, 2), 0), 0, keepdim=True),
                 target, (1, 5))
 
             acc_top1.update(top1.item(), B)
@@ -455,6 +461,44 @@ def test(data_loader, model):
     return losses.avg, [acc_top1.avg, acc_top5.avg]
 
 
+def write_stats_transfer_epoch(stats, writer, epoch, mode="Train"):
+    writer.add_scalars('ep/Losses', {f'{mode} Loss': stats["total_loss"].avg}, epoch)
+
+    writer.add_scalars('ep/Accuracy', {f'{mode} Acc': stats["accuracy"].avg}, epoch)
+
+
+def write_stats_transfer_iteration(stats, writer, iteration):
+    writer.add_scalars('it/Train_Loss', {'loss': stats["total_loss"].local_avg}, iteration)
+
+    writer.add_scalars('it/Train_Accuracy', {'Train Acc': stats["accuracy"].local_avg},
+                       iteration)
+
+    all_calced_timings = sum([stats[tms].local_avg for tms in ["time_data_loading",
+                                                               "time_cuda_transfer",
+                                                               "time_forward",
+                                                               "time_backward",
+                                                               ]])
+    timing_dict = {'Loading Data':       stats["time_data_loading"].local_avg,
+                   'Cuda Transfer':      stats["time_cuda_transfer"].local_avg,
+                   'Forward Pass':       stats["time_forward"].local_avg,
+                   'Backward Pass':      stats["time_backward"].local_avg,
+                   'Loading + Transfer + '
+                   'Forward + Backward': all_calced_timings,
+                   'All':                stats["time_all"].local_avg
+                   }
+
+    writer.add_scalars('it/Batch-Wise_Timings', timing_dict, iteration)
+
+
+def print_tr_stats_timings_avg(tr_stats):
+    print('Batch-wise Timings:\n'
+          f'Data Loading: {tr_stats["time_data_loading"].avg:.4f}s | '
+          f'Cuda Transfer: {tr_stats["time_cuda_transfer"].avg:.4f}s | '
+          f'Forward: {tr_stats["time_forward"].avg:.4f}s | '
+          f'Backward: {tr_stats["time_backward"].avg:.4f}s | '
+          f'All: {tr_stats["time_all"].avg:.4f}s\n')
+
+
 def get_data(transform, mode='train'):
     print('Loading data for "%s" ...' % mode)
     global dataset
@@ -463,13 +507,15 @@ def get_data(transform, mode='train'):
                                 transform=transform,
                                 seq_len=args.seq_len,
                                 downsample_vid=args.ds,
-                                which_split=args.split)
+                                which_split=args.split,
+                                max_samples=args.max_samples)
     elif args.dataset == 'hmdb51':
         dataset = HMDB51Dataset(mode=mode,
                                 transform=transform,
                                 seq_len=args.seq_len,
                                 downsample_vid=args.ds,
-                                which_split=args.split)
+                                which_split=args.split,
+                                max_samples=args.max_samples)
     else:
         raise ValueError('dataset not supported')
     my_sampler = data.RandomSampler(dataset)

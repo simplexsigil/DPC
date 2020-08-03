@@ -14,7 +14,9 @@ class HMDB51Dataset(data.Dataset):
                  seq_len=30,
                  downsample_vid=1,
                  epsilon=5,
-                 which_split=1):
+                 which_split=1,
+                 max_samples=None,
+                 random_state=42):
         self.mode = mode
         self.transform = transform
         self.seq_len = seq_len
@@ -55,6 +57,9 @@ class HMDB51Dataset(data.Dataset):
               f"Remaining dataset size in mode {self.mode}: {len(video_info) - len(drop_idx)}")
 
         self.video_info = video_info.drop(drop_idx, axis=0)
+
+        if max_samples is not None:
+            self.video_info = self.video_info.sample(max_samples, random_state=random_state)
 
         if mode == 'val':
             self.video_info = self.video_info.sample(frac=0.3)  # TODO: This makes no sense with splits.
