@@ -41,7 +41,7 @@ parser.add_argument('--ds', default=2, type=int)
 parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='lc_r2+1d', type=str, choices=["lc_cont", "lc_r2+1d"])
-parser.add_argument('--net', default='r2+1d18', type=str)
+parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--num_class', default=51, type=int)
@@ -111,7 +111,6 @@ def main():
                    dropout=args.dropout)
     elif args.model == "lc_cont":
         model = Resnet18Classifier(sample_size=args.img_dim,
-                                   num_seq=args.num_seq,
                                    seq_len=args.seq_len,
                                    network=args.net,
                                    num_class=args.num_class,

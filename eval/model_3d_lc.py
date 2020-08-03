@@ -80,14 +80,13 @@ class LC(nn.Module):
 
 
 class Resnet18Classifier(nn.Module):
-    def __init__(self, sample_size, num_seq, seq_len, network='resnet18', dropout=0.5, num_class=101,
+    def __init__(self, sample_size, seq_len, network='resnet18', dropout=0.5, num_class=101,
                  crossm_vector_length=512):
         super(Resnet18Classifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
         torch.cuda.manual_seed(666)
         self.sample_size = sample_size
-        self.num_seq = num_seq
         self.seq_len = seq_len
         self.num_class = num_class
         self.crossm_vector_length = crossm_vector_length
