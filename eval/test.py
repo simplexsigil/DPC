@@ -38,7 +38,7 @@ parser.add_argument('--max_samples', default=None, type=int, help='Limit for sam
 
 parser.add_argument('--seq_len', default=30, type=int)
 parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--img_dim', default=128, type=int)
+parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "r2+1d"])
 parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
@@ -474,7 +474,7 @@ def prepare_optimizer(model, args):
 
         params = []
         for name, param in model.module.named_parameters():
-            if "backbone" in name:
+            if ("backbone" in name) or ("dpc_feature_conversion" in name):
                 pass
             else:
                 params.append({'params': param})
@@ -490,7 +490,7 @@ def prepare_optimizer(model, args):
         print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
         params = []
         for name, param in model.module.named_parameters():
-            if "backbone" in name:
+            if ("backbone" in name) or ("dpc_feature_conversion" in name):
                 params.append({'params': param, 'lr': args.lr * args.fine_tuning})
                 print(f"{name:<50} {str(param.requires_grad):<6} {args.lr * args.fine_tuning}")
             else:
