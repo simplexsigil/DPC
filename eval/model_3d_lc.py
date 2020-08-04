@@ -85,7 +85,8 @@ class Resnet18Classifier(nn.Module):
 
 
 class R2plus1DClassifier(nn.Module):
-    def __init__(self, sample_size, seq_len, backbone='r2+1d18', dropout=0.5, num_class=101, representation_size=512):
+    def __init__(self, sample_size, seq_len, backbone='r2+1d18', dropout=0.5, num_class=101, representation_size=512,
+                 intermediate_fc_width=512):
         super(R2plus1DClassifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
@@ -97,18 +98,26 @@ class R2plus1DClassifier(nn.Module):
 
         if "r2+1d" in backbone:
             if backbone == "r2+1d18":
-                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=representation_size)
+                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=intermediate_fc_width)
             else:
                 raise ValueError
 
-        self.final_fc = nn.Sequential(
+        self.projection_head = nn.Sequential(
+            nn.Dropout(dropout),
             nn.ReLU(),
-            nn.Linear(self.representation_size, self.representation_size),
+            nn.Linear(self.intermediate_fc_width, self.intermediate_fc_width),
+            nn.Dropout(dropout),
+            nn.ReLU(),
+            nn.Linear(self.intermediate_fc_width, self.representation_size)
+            )
+
+        self.final_fc = nn.Sequential(
             nn.Dropout(dropout),
             nn.ReLU(),
             nn.Linear(self.representation_size, self.num_class)
             )
 
+        R2plus1DClassifier._initialize_weights(self.projection_head)
         R2plus1DClassifier._initialize_weights(self.final_fc)
 
     def forward(self, block):
@@ -116,6 +125,7 @@ class R2plus1DClassifier(nn.Module):
 
         feature = self.backbone(block)
         del block
+        feature = self.projection_head(feature)
 
         output = self.final_fc(feature).view(B, self.num_class)
 
