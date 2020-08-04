@@ -27,15 +27,23 @@ class HMDB51Dataset(data.Dataset):
         self.epsilon = epsilon
         self.which_split = which_split
 
+        print("=================================")
+        print(f'Dataset HMDB51 split {which_split}: {mode} set.')
         # splits
         if mode == 'train':
             split = os.path.expanduser('~/datasets/HMDB51/split/train_split%02d.csv' % self.which_split)
             video_info = pd.read_csv(split, header=None)
         elif (mode == 'val') or (mode == 'test'):
-            split = os.path.expanduser(
-                '~/datasets/HMDB51/split/test_split%02d.csv' % self.which_split)  # use test for val, temporary
+            # TODO: Separate Test split?
+            split = os.path.expanduser('~/datasets/HMDB51/split/test_split%02d.csv' % self.which_split)
             video_info = pd.read_csv(split, header=None)
-        else: raise ValueError('wrong mode')
+        else:
+            raise ValueError('wrong mode')
+
+        print(f'Total number of video samples: {len(video_info)}')
+
+        print(f'Frames per sequence: {seq_len}\n'
+              f'Downsampling on video frames: {downsample_vid}')
 
         # get action list
         self.action_dict_encode = {}
@@ -56,8 +64,8 @@ class HMDB51Dataset(data.Dataset):
             if vlen - self.seq_len <= 0:
                 drop_idx.append(idx)
 
-        print(f"In mode {self.mode}, {len(drop_idx)} of {len(video_info)} videos had to be dropped (too short).\n"
-              f"Remaining dataset size in mode {self.mode}: {len(video_info) - len(drop_idx)}")
+        print(f"Dropped {len(drop_idx)} samples due to insufficient length (less than {seq_len} frames).\n"
+              f"Remaining dataset size: {len(video_info) - len(drop_idx)}")
 
         self.video_info = video_info.drop(drop_idx, axis=0)
 
@@ -68,18 +76,31 @@ class HMDB51Dataset(data.Dataset):
             self.video_info = self.video_info.sample(frac=0.3)  # TODO: This makes no sense with splits.
         # shuffle not required
 
+        if mode == "test":
+            print(f'In mode test, 10 uniformly chosen sequence samples of length {seq_len} '
+                  f'are chosen from each video sample for evaluation instead of a single one.')
+
+        print("=================================")
+
     def __getitem__(self, index):
         dsu = DatasetUtils
         vpath, vlen = self.video_info.iloc[index]
 
         if self.mode == "train" or self.mode == "val":
             frame_idxs = dsu.idx_sampler(vlen, self.seq_len, vpath)
+            frame_idxs_vid = frame_idxs[::self.downsample_vid]
         elif self.mode == "test":
-            frame_idxs = list(range((vlen // self.seq_len) * self.seq_len))  # Test on whole video. Get rid of offcut.
+            # Choose 10 samples.
+            frame_idxs_ls = []
+            frame_idxs_vid = []
+            for i in range(10):
+                frame_idxs_ls.append(dsu.idx_sampler(vlen, self.seq_len, vpath))
+                frame_idxs_ls[i] = frame_idxs_ls[i][::self.downsample_vid]
+
+            for i in range(10):
+                frame_idxs_vid.extend(frame_idxs_ls[i])
         else:
             raise ValueError
-
-        frame_idxs_vid = frame_idxs[::self.downsample_vid]
 
         seq = [DatasetUtils.pil_loader(os.path.join(vpath, 'image_%05d.jpg' % (i + 1))) for i in frame_idxs_vid]
         t_seq = self.transform(seq)  # apply same transform

@@ -28,7 +28,7 @@ parser.add_argument('--prefix', default='tmp_r21d', type=str)
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--num_workers', default=16, type=int)
 
-parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=3, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=1, type=int)
 
 parser.add_argument('--dataset', default='hmdb51', type=str)
@@ -37,10 +37,10 @@ parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for 
 parser.add_argument('--max_samples', default=None, type=int, help='Limit for samples.')
 
 parser.add_argument('--seq_len', default=30, type=int)
-parser.add_argument('--ds', default=2, type=int)
-parser.add_argument('--img_dim', default=224, type=int)
+parser.add_argument('--ds', default=1, type=int)
+parser.add_argument('--img_dim', default=128, type=int)
 
-parser.add_argument('--model', default='lc_r2+1d', type=str, choices=["lc_cont", "lc_r2+1d"])
+parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "r2+1d"])
 parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
@@ -48,7 +48,9 @@ parser.add_argument('--num_class', default=51, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
-parser.add_argument('--train_what', default='last_only', type=str, help='Train what parameters?')
+parser.add_argument('--fine_tuning', default=0.1, type=float, help='A ratio which determines the learning rate '
+                                                                   'for the backbone in relation to lr.'
+                                                                   'Backbone will be frozen if 0.')
 
 parser.add_argument('--print_freq', default=5, type=int)
 
@@ -74,168 +76,48 @@ def main():
     print(args)
     print()
 
-    os.environ[
-        "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
-
-    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
-    print('Available device count: {}'.format(torch.cuda.device_count()))
-
-    args.gpu = list(range(
-        torch.cuda.device_count()))  # Really weird: In Pytorch 1.2, the device ids start from 0 on the visible devices.
-
-    print(
-        "Note: At least in Pytorch 1.2, device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
-
-    for i in args.gpu:
-        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
-    print("Cuda is available: {}".format(torch.cuda.is_available()))
-
-    global cuda
-    cuda = torch.device('cuda')
+    cuda_dev = prepare_cuda(args)
+    print()
 
     if args.dataset == 'ucf101':
         args.num_class = 101
     elif args.dataset == 'hmdb51':
         args.num_class = 51
 
-    print("Using dataset {}".format(args.dataset))
-
     ### classifier model ###
-    if args.model == 'lc':
-        model = LC(sample_size=args.img_dim,
-                   num_seq=args.num_seq,
-                   seq_len=args.seq_len,
-                   network=args.net,
-                   num_class=args.num_class,
-                   dropout=args.dropout)
-    elif args.model == "lc_cont":
-        model = Resnet18Classifier(sample_size=args.img_dim,
-                                   seq_len=args.seq_len,
-                                   network=args.net,
-                                   num_class=args.num_class,
-                                   dropout=args.dropout,
-                                   crossm_vector_length=args.representation_size
-                                   )
-    elif args.model == "lc_r2+1d":
-        model = R2plus1DClassifier(sample_size=args.img_dim,
-                                   seq_len=args.seq_len,
-                                   backbone=args.net,
-                                   num_class=args.num_class,
-                                   dropout=args.dropout,
-                                   representation_size=args.representation_size
-                                   )
-    else:
-        raise ValueError('wrong model!')
+    model = select_model(args)
 
     print("Using model {}".format(model.__class__))
+    print()
+
     model = nn.DataParallel(model)
-    model = model.to(cuda)
-    global criterion;
+    model = model.to(cuda_dev)
+
+    global criterion
     criterion = nn.CrossEntropyLoss()
 
-    ### optimizer ### 
-    params = None
-    if args.train_what == 'ft':
-        print('=> finetune backbone with smaller lr')
-        params = []
-        for name, param in model.module.named_parameters():
-            if ('resnet' in name) or ('rnn' in name):
-                params.append({'params': param, 'lr': args.lr / 10})
-            else:
-                params.append({'params': param})
-    elif args.train_what == 'last_only':
-        print('=> only train last layers')
-        params = []
-        print("=======Only training the following parameters:=======")
-        for name, param in model.module.named_parameters():
-            if ('resnet' in name) or ('rnn' in name):
-                pass
-            else:
-                params.append({'params': param})
-                print(name)
+    if args.test:
+        test_only(model, args)
+        sys.exit()
 
-    else:
-        pass  # train all layers
-
-    print('\n===========Check Grad============')
-    for name, param in model.named_parameters():
-        print(name, param.requires_grad)
-    print('=================================\n')
-
-    if params is None: params = model.parameters()
-
-    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
-    if args.dataset == 'hmdb51':
-        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[150, 250, 300], repeat=1)
-    elif args.dataset == 'ucf101':
-        if args.img_dim == 224:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[300, 400, 500], repeat=1)
-        else:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[60, 80, 100], repeat=1)
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+    optimizer, scheduler = prepare_optimizer(model, args)
 
     args.old_lr = None
     best_acc = 0
-    global iteration;
+    global iteration
     iteration = 0
 
-    ### restart training ###
-    if args.test:
-        if os.path.isfile(args.test):
-            print("=> loading testing checkpoint '{}'".format(args.test))
-            checkpoint = torch.load(args.test)
-            try:
-                model.load_state_dict(checkpoint['state_dict'])
-            except:
-                print('=> [Warning]: weight structure is not equal to test model; Use non-equal load ==')
-                model = neq_load_customized(model, checkpoint['state_dict'])
-            print("=> loaded testing checkpoint '{}' (epoch {})".format(args.test, checkpoint['epoch']))
-            global num_epoch;
-            num_epoch = checkpoint['epoch']
-        elif args.test == 'random':
-            print("=> [Warning] loaded random weights")
-        else:
-            raise ValueError()
-
-        transform = transforms.Compose([
-            RandomSizedCrop(consistent=True, size=224, p=0.0),
-            Scale(size=(args.img_dim, args.img_dim)),
-            ToTensor(),
-            Normalize()
-            ])
-        test_loader = get_data(transform, 'test')
-        test_loss, test_acc = test(test_loader, model)
-        sys.exit()
-    else:  # not test
-        pass
-        # torch.backends.cudnn.benchmark = True
-
     if args.resume:
-        if os.path.isfile(args.resume):
-            args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
-            print("=> loading resumed checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
-            args.start_epoch = checkpoint['epoch']
-            best_acc = checkpoint['best_acc']
-            model.load_state_dict(checkpoint['state_dict'])
-            if not args.reset_lr:  # if didn't reset lr, load old optimizer
-                optimizer.load_state_dict(checkpoint['optimizer'])
-            else:
-                print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
-            iteration = checkpoint['iteration']
-            print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+        prepare_resume(model, optimizer)
 
     if (not args.resume) and args.pretrain:
         if args.pretrain == 'random':
             print('=> using random weights')
         elif os.path.isfile(args.pretrain):
-            print("=> loading pretrained checkpoint '{}'".format(args.pretrain))
             checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
 
             model.module.load_weights_state_dict(checkpoint['state_dict'], model=model)
+            print()
             print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.pretrain))
@@ -258,13 +140,14 @@ def main():
         Normalize()
         ])
 
-    train_loader = get_data(transform, 'train')
-    val_loader = get_data(val_transform, 'val')
+    train_loader = get_data(transform, args, 'train')
+    val_loader = get_data(val_transform, args, 'val')
 
     # setup tools
     global de_normalize
     global img_path
     img_path, model_path = set_path(args)
+    args.img_path, args.model_path = img_path, model_path
     global writer_train
     try:  # old version
         writer_val = SummaryWriter(log_dir=os.path.join(img_path, 'val'))
@@ -292,6 +175,9 @@ def main():
             }, is_best, model_path=model_path)
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
+
+    args.test = os.path.join(args.model_path, "model_best.pth.tar")
+    test_only(model, args)
 
 
 def train(data_loader, model, optimizer, epoch, args):
@@ -327,8 +213,8 @@ def train(data_loader, model, optimizer, epoch, args):
 
         start_time = time.perf_counter()  # Timing cuda transfer
 
-        vid_seq = vid_seq.to(cuda)
-        target = target.to(cuda)
+        vid_seq = vid_seq.to(cuda_dev)
+        target = target.to(cuda_dev)
 
         stop_time = time.perf_counter()
 
@@ -395,8 +281,8 @@ def validate(data_loader, model, epoch, args):
     model.eval()
     with torch.no_grad():
         for idx, (input_seq, target) in tqdm(enumerate(data_loader), total=len(data_loader)):
-            input_seq = input_seq.to(cuda)
-            target = target.to(cuda)
+            input_seq = input_seq.to(cuda_dev)
+            target = target.to(cuda_dev)
             batch_size = input_seq.size(0)
             output = model(input_seq)
 
@@ -415,7 +301,7 @@ def validate(data_loader, model, epoch, args):
     return tr_stats["total_loss"].avg, tr_stats["accuracy"].avg
 
 
-def test(data_loader, model):
+def test(data_loader, model, num_epoch):
     losses = AverageMeter()
     acc_top1 = AverageMeter()
     acc_top5 = AverageMeter()
@@ -423,29 +309,36 @@ def test(data_loader, model):
     model.eval()
     with torch.no_grad():
         for idx, (input_seq, target) in tqdm(enumerate(data_loader), total=len(data_loader)):
-            input_seq = input_seq.to(cuda)
-            target = target.to(cuda)
-            B = input_seq.size(0)
-            input_seq = input_seq.squeeze(0)  # squeeze the '1' batch dim
-            output = model(input_seq)
-            del input_seq
-            top1, top5 = calc_topk_accuracy(torch.mean(
-                torch.mean(
-                    nn.functional.softmax(output, 2), 0), 0, keepdim=True),
-                target, (1, 5))
+            input_seq = input_seq.to(cuda_dev)
+            target = target.to(cuda_dev)
+            (batch_size, C, T, W, H) = input_seq.shape
 
-            acc_top1.update(top1.item(), B)
-            acc_top5.update(top5.item(), B)
+            seq_len_ds = args.seq_len // args.ds + (1 if args.seq_len % args.ds != 0 else 0)
+
+            input_seq = input_seq.reshape((batch_size, C, -1, seq_len_ds, W, H))
+            input_seq = input_seq.transpose(1, 2)
+            (batch_size, num_seq, C, T, W, H) = input_seq.shape
+            input_seq = input_seq.reshape((batch_size * num_seq, C, seq_len_ds, W, H))
+
+            scores = model(input_seq)
+            del input_seq
+
+            soft_scores = nn.functional.softmax(scores, 1)
+            mean_score = torch.mean(soft_scores, 0).view((batch_size, -1))
+
+            top1, top5 = calc_topk_accuracy(mean_score, target, (1, 5))
+
+            _, pred = torch.max(mean_score, 1)
+            confusion_mat.update(pred, target.view(-1).byte())
+
+            acc_top1.update(top1.item(), batch_size)
+            acc_top5.update(top5.item(), batch_size)
             del top1, top5
 
-            output = torch.mean(torch.mean(output, 0), 0, keepdim=True)
-            loss = criterion(output, target.squeeze(-1))
+            loss = criterion(scores, target.repeat(num_seq))
 
-            losses.update(loss.item(), B)
+            losses.update(loss.item(), batch_size)
             del loss
-
-            _, pred = torch.max(output, 1)
-            confusion_mat.update(pred, target.view(-1).byte())
 
     print('Loss {loss.avg:.4f}\t'
           'Acc top1: {top1.avg:.4f} Acc top5: {top5.avg:.4f} \t'.format(loss=losses, top1=acc_top1, top5=acc_top5))
@@ -497,7 +390,7 @@ def print_tr_stats_timings_avg(tr_stats):
           f'All: {tr_stats["time_all"].avg:.4f}s\n')
 
 
-def get_data(transform, mode='train'):
+def get_data(transform, args, mode='train'):
     print('Loading data for "%s" ...' % mode)
     global dataset
     if args.dataset == 'ucf101':
@@ -542,6 +435,153 @@ def get_data(transform, mode='train'):
                                       pin_memory=True)
     print('"%s" dataset size: %d' % (mode, len(dataset)))
     return data_loader
+
+
+def prepare_resume(model, optimizer):
+    if os.path.isfile(args.resume):
+        args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
+        print("=> loading resumed checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
+        args.start_epoch = checkpoint['epoch']
+        best_acc = checkpoint['best_acc']
+        model.load_state_dict(checkpoint['state_dict'])
+        if not args.reset_lr:  # if didn't reset lr, load old optimizer
+            optimizer.load_state_dict(checkpoint['optimizer'])
+        else:
+            print('==== Change lr from %f to %f ====' % (args.old_lr, args.lr))
+        iteration = checkpoint['iteration']
+        print("=> loaded resumed checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+    else:
+        print("=> no checkpoint found at '{}'".format(args.resume))
+
+
+def prepare_optimizer(model, args):
+    ### optimizer ###
+    if args.fine_tuning == 1.0:
+        params = model.parameters()
+
+        print('\n==========Training All===========')
+        print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
+        for name, param in model.named_parameters():
+            print(f"{name:<50} {str(param.requires_grad):<6} {args.lr}")
+        print('=================================\n')
+
+    elif args.fine_tuning == 0.0:
+        print("=======Training Last Only========")
+        print("Only training the following parameters:")
+        print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
+
+        params = []
+        for name, param in model.module.named_parameters():
+            if ("backbone" in name) and not ("fc" in name):
+                pass
+            else:
+                params.append({'params': param})
+                print(f"{name:<50} {str(param.requires_grad):<6} {args.lr}")
+    elif args.fine_tuning < 0.0:
+        raise ValueError
+    else:
+        print("====Training with Fine Tuning====")
+        print(f'The backbone network is finetuned with a learning rate of {args.fine_tuning} x main learning rate.')
+        if args.fine_tuning > 1.0:
+            print("WARNING: A fine tuning learning rate ratio larger than 1.0 does not make sense.")
+
+        print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
+        params = []
+        for name, param in model.module.named_parameters():
+            if ("backbone" in name) and not ("fc" in name):
+                params.append({'params': param, 'lr': args.lr * args.fine_tuning})
+                print(f"{name:<50} {str(param.requires_grad):<6} {args.lr * args.fine_tuning}")
+            else:
+                params.append({'params': param})
+                print(f"{name:<50} {str(param.requires_grad):<6} {args.lr}")
+
+    optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
+
+    if args.dataset == 'hmdb51':
+        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[150, 250, 300], repeat=1)
+    elif args.dataset == 'ucf101':
+        if args.img_dim == 224:
+            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[300, 400, 500], repeat=1)
+        else:
+            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[60, 80, 100], repeat=1)
+    else:
+        raise ValueError
+
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    return optimizer, scheduler
+
+
+def select_model(args):
+    if args.model == "resnet":
+        model = Resnet18Classifier(sample_size=args.img_dim,
+                                   seq_len=args.seq_len,
+                                   network=args.net,
+                                   num_class=args.num_class,
+                                   dropout=args.dropout,
+                                   crossm_vector_length=args.representation_size
+                                   )
+    elif args.model == "r2+1d":
+        model = R2plus1DClassifier(sample_size=args.img_dim,
+                                   seq_len=args.seq_len,
+                                   backbone=args.net,
+                                   num_class=args.num_class,
+                                   dropout=args.dropout,
+                                   representation_size=args.representation_size
+                                   )
+    else:
+        raise ValueError('wrong model!')
+
+    return model
+
+
+def prepare_cuda(args):
+    os.environ[
+        "CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # NVIDIA-SMI uses PCI_BUS_ID device order, but CUDA orders graphics devices by speed by default (fastest first).
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(id) for id in args.gpu])
+
+    print('Cuda visible devices: {}'.format(os.environ["CUDA_VISIBLE_DEVICES"]))
+    print('Available device count: {}'.format(torch.cuda.device_count()))
+
+    args.gpu = list(range(
+        torch.cuda.device_count()))  # Really weird: In Pytorch 1.2, the device ids start from 0 on the visible devices.
+
+    print("Note: Device ids are reindexed on the visible devices and not the same as in nvidia-smi.")
+
+    for i in args.gpu:
+        print("Using Cuda device {}: {}".format(i, torch.cuda.get_device_name(i)))
+    print("Cuda is available: {}".format(torch.cuda.is_available()))
+
+    global cuda_dev
+    cuda_dev = torch.device('cuda')
+
+    return cuda_dev
+
+
+def test_only(model, args):
+    if os.path.isfile(args.test):
+        ('\n==========Testing Model===========')
+        print("Loading testing checkpoint '{}'".format(args.test))
+        checkpoint = torch.load(args.test)
+
+        model.load_state_dict(checkpoint['state_dict'])
+        print(f"Successfully loaded testing checkpoint '{args.test}' (epoch {checkpoint['epoch']})")
+        num_epoch = checkpoint['epoch']
+    elif args.test == 'random':
+        num_epoch = 0
+        print("=> [Warning] loaded random weights")
+    else:
+        raise ValueError
+
+    transform = transforms.Compose([
+        Scale(size=args.img_dim),
+        RandomSizedCrop(consistent=True, size=args.img_dim, p=0.0),
+        ToTensor(),
+        Normalize()
+        ])
+    test_loader = get_data(transform, args, 'test')
+    test_loss, test_acc = test(test_loader, model, num_epoch)
 
 
 def set_path(args, mode="training"):
