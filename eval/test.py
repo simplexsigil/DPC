@@ -28,7 +28,7 @@ parser.add_argument('--prefix', default='tmp_r21d', type=str)
 parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--num_workers', default=16, type=int)
 
-parser.add_argument('--epochs', default=3, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=200, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=1, type=int)
 
 parser.add_argument('--dataset', default='hmdb51', type=str)
@@ -44,6 +44,7 @@ parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "r2
 parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
+parser.add_argument('--hidden_fc_width', default=512, type=int)
 parser.add_argument('--num_class', default=51, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float)
@@ -473,7 +474,7 @@ def prepare_optimizer(model, args):
 
         params = []
         for name, param in model.module.named_parameters():
-            if ("backbone" in name) and not ("fc" in name):
+            if "backbone" in name:
                 pass
             else:
                 params.append({'params': param})
@@ -489,7 +490,7 @@ def prepare_optimizer(model, args):
         print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
         params = []
         for name, param in model.module.named_parameters():
-            if ("backbone" in name) and not ("fc" in name):
+            if "backbone" in name:
                 params.append({'params': param, 'lr': args.lr * args.fine_tuning})
                 print(f"{name:<50} {str(param.requires_grad):<6} {args.lr * args.fine_tuning}")
             else:
@@ -528,7 +529,8 @@ def select_model(args):
                                    backbone=args.net,
                                    num_class=args.num_class,
                                    dropout=args.dropout,
-                                   representation_size=args.representation_size
+                                   representation_size=args.representation_size,
+                                   hidden_fc_width=args.hidden_fc_width
                                    )
     else:
         raise ValueError('wrong model!')
