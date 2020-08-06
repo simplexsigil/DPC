@@ -13,7 +13,7 @@ from augmentation import Denormalize
 plt.switch_backend('agg')
 
 
-def write_out_images(img_seq, writer, iteration, img_dim=128):
+def write_out_images(img_seq, writer, iteration, img_dim=224):
     de_normalize = Denormalize()
 
     if img_seq.shape[0] > 2:

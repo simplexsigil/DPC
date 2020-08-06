@@ -193,8 +193,10 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
         tr_stats["time_memory_update"].update(time.perf_counter() - start_time)
 
         # Calculate Accuracies
-        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb, (1, 3, 4))
-        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk, (1, 3, 4))
+        top1_rgb, top3_rgb, top5_rgb = calc_topk_accuracy(score_rgb_to_sk, targets_rgb,
+                                                          (1, min(3, batch_size), min(5, batch_size)))
+        top1_sk, top3_sk, top5_sk = calc_topk_accuracy(score_sk_to_rgb, targets_sk,
+                                                       (1, min(3, batch_size), min(5, batch_size)))
 
         tr_stats["accuracy_sk"]["top1"].update(top1_sk.item(), batch_size)
         tr_stats["accuracy_sk"]["top3"].update(top3_sk.item(), batch_size)

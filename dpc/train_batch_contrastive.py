@@ -35,6 +35,7 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
     tr_stats = {"time_data_loading":  AverageMeter(locality=args.print_freq),
                 "time_cuda_transfer": AverageMeter(locality=args.print_freq),
                 "time_forward":       AverageMeter(locality=args.print_freq),
+                "time_scoring":       AverageMeter(locality=args.print_freq),
                 "time_backward":      AverageMeter(locality=args.print_freq),
                 "time_all":           AverageMeter(locality=args.print_freq),
 
@@ -81,22 +82,27 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         # Forward pass: Calculation
         s_forw_time = time.perf_counter()
 
-        repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_score=True)
+        repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_scoring=True)
 
-        # It is noticeably slower to calculate scores outside of the forward function.
+        e_forw_time = time.perf_counter()
+        tr_stats["time_forward"].update(e_forw_time - s_forw_time)
+
+        # Scoring
+        s_score_time = time.perf_counter()
+
         score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function,
                                                temp_tao=args.temperature)
 
         targets = list(range(len(score)))
         targets = torch.tensor(targets, requires_grad=False, dtype=torch.long).to(repr_vid.device)
 
-        e_forw_time = time.perf_counter()
-        tr_stats["time_forward"].update(e_forw_time - s_forw_time)
+        e_score_time = time.perf_counter()
+        tr_stats["time_scoring"].update(e_score_time - s_score_time)
 
         calculate_tr_stats(repr_vid, repr_sk, tr_stats)
 
         # Calculate Accuracies
-        top1, top3, top5 = calc_topk_accuracy(score, targets, (1, 3, 5))
+        top1, top3, top5 = calc_topk_accuracy(score, targets, (1, min(3, batch_size), min(5, batch_size)))
 
         tr_stats["accuracy"]["top1"].update(top1.item(), batch_size)
         tr_stats["accuracy"]["top3"].update(top3.item(), batch_size)
@@ -163,6 +169,8 @@ def calculate_tr_stats(rep_vid: torch.Tensor, rep_sk: torch.Tensor, tr_stats):
 def write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch):
     writer_train.add_scalars('ep/Losses', {'Training Loss': tr_stats["total_loss"].avg}, epoch)
 
+    writer_train.add_scalars('ep/Accuracies', {'Train Acc': tr_stats["accuracy"]["top1"].avg}, epoch)
+
     writer_train.add_scalars('ep/Train_Accuracy', {'top1': tr_stats["accuracy"]["top1"].avg,
                                                    'top3': tr_stats["accuracy"]["top3"].avg,
                                                    'top5': tr_stats["accuracy"]["top5"].avg}, epoch)
@@ -187,15 +195,17 @@ def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
     all_calced_timings = sum([tr_stats[tms].local_avg for tms in ["time_data_loading",
                                                                   "time_cuda_transfer",
                                                                   "time_forward",
+                                                                  "time_scoring",
                                                                   "time_backward",
                                                                   ]])
-    timing_dict = {'Loading Data':       tr_stats["time_data_loading"].local_avg,
-                   'Cuda Transfer':      tr_stats["time_cuda_transfer"].local_avg,
-                   'Forward Pass':       tr_stats["time_forward"].local_avg,
-                   'Backward Pass':      tr_stats["time_backward"].local_avg,
+    timing_dict = {'Loading Data':                 tr_stats["time_data_loading"].local_avg,
+                   'Cuda Transfer':                tr_stats["time_cuda_transfer"].local_avg,
+                   'Forward Pass':                 tr_stats["time_forward"].local_avg,
+                   'Scoring':                      tr_stats["time_scoring"].local_avg,
+                   'Backward Pass':                tr_stats["time_backward"].local_avg,
                    'Loading + Transfer + '
-                   'Forward + Backward': all_calced_timings,
-                   'All':                tr_stats["time_all"].local_avg
+                   'Forward + Scoring + Backward': all_calced_timings,
+                   'All':                          tr_stats["time_all"].local_avg
                    }
 
     writer_train.add_scalars('it/Batch-Wise_Timings', timing_dict, iteration)
@@ -241,36 +251,40 @@ def validate(data_loader, model, criterion, cuda_device, epoch, args, writer_val
 
     with torch.no_grad():
         for idx, out in enumerate(data_loader):
-            bat_idx, input_seq, sk_seq = out
+            bat_idx, vid_seq, sk_seq = out
 
             val_stats["time_data_loading"].update(time.perf_counter() - start_time)
             start_time = time.perf_counter()
 
-            input_seq = input_seq.to(cuda_device)
+            vid_seq = vid_seq.to(cuda_device)
 
             val_stats["time_cuda_transfer"].update(time.perf_counter() - start_time)
             start_time = time.perf_counter()
 
-            batch_size = input_seq.size(0)
+            batch_size = vid_seq.size(0)
 
-            score, targets, _, _ = model(input_seq, sk_seq)
+            repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_scoring=True)
 
             val_stats["time_forward"].update(time.perf_counter() - start_time)
 
-            del input_seq, sk_seq
+            score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function,
+                                                   temp_tao=args.temperature)
 
-            target_flattened = targets.detach()  # It's the diagonals.
+            del vid_seq, sk_seq
 
-            loss = criterion(score, target_flattened)
+            targets = list(range(len(score)))
+            targets = torch.tensor(targets, requires_grad=False, dtype=torch.long).to(repr_vid.device)
 
-            top1, top3, top5 = calc_topk_accuracy(score, target_flattened, (1, 3, 4))
+            loss = criterion(score, targets)
+
+            top1, top3, top5 = calc_topk_accuracy(score, targets, (1, 3, 4))
 
             val_stats["total_loss"].update(loss.item(), batch_size)
             val_stats["accuracy"]["top1"].update(top1.item(), batch_size)
             val_stats["accuracy"]["top3"].update(top3.item(), batch_size)
             val_stats["accuracy"]["top5"].update(top5.item(), batch_size)
 
-            del score, target_flattened, loss
+            del score, targets, loss
 
             val_stats["time_all"].update(time.perf_counter() - all_time)
 
@@ -294,6 +308,9 @@ def print_val_avg(val_stats, epoch, args):
 
 def write_val_stats_avg(val_stats, writer_val, epoch):
     writer_val.add_scalars('ep/Losses', {'Validation Loss': val_stats["total_loss"].avg}, epoch)
+
+    writer_val.add_scalars('ep/Accuracies', {'Val Acc': val_stats["accuracy"]["top1"].avg}, epoch)
+
     writer_val.add_scalars('ep/Val_Accuracy', {"top1": val_stats["accuracy"]["top1"].avg,
                                                "top3": val_stats["accuracy"]["top3"].avg,
                                                "top5": val_stats["accuracy"]["top5"].avg}, epoch)

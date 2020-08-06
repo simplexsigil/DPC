@@ -13,7 +13,7 @@ import torchvision
 
 
 class Resnet18Classifier(nn.Module):
-    def __init__(self, sample_size, seq_len, network='resnet18', dropout=0.5, num_class=101,
+    def __init__(self, sample_size, seq_len, network='dpc-resnet18', dropout=0.5, num_class=101,
                  crossm_vector_length=512):
         super(Resnet18Classifier, self).__init__()
 
@@ -41,8 +41,8 @@ class Resnet18Classifier(nn.Module):
 
         self.final_fc = nn.Sequential(
             nn.Dropout(dropout),
-            nn.ReLU(),
-            nn.Linear(self.crossm_vector_length, self.crossm_vector_length),
+            #nn.ReLU(),
+            #nn.Linear(self.crossm_vector_length, self.crossm_vector_length),
             nn.ReLU(),
             nn.Linear(self.crossm_vector_length, self.num_class)
             )

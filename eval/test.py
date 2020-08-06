@@ -38,9 +38,9 @@ parser.add_argument('--max_samples', default=None, type=int, help='Limit for sam
 
 parser.add_argument('--seq_len', default=30, type=int)
 parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--img_dim', default=224, type=int)
+parser.add_argument('--img_dim', default=128, type=int)
 
-parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "r2+1d"])
+parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "dpc-resnet", "r2+1d"])
 parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
@@ -125,10 +125,10 @@ def main():
 
     ### load data ###
     transform = transforms.Compose([
-        RandomSizedCrop(consistent=True, size=224, p=1.0),
+        RandomSizedCrop(consistent=True, size=224, p=1.0, crop_area=(0.15, 1.0)),
         Scale(size=(args.img_dim, args.img_dim)),
         RandomHorizontalFlip(consistent=True),
-        ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.25, p=0.3, consistent=True),
+        ColorJitter(brightness=1, contrast=1, saturation=1, hue=0.20, p=0.3, consistent=True),
         ToTensor(),
         Normalize()
         ])
@@ -515,7 +515,7 @@ def prepare_optimizer(model, args):
 
 
 def select_model(args):
-    if args.model == "resnet":
+    if args.model == "dpc-resnet":
         model = Resnet18Classifier(sample_size=args.img_dim,
                                    seq_len=args.seq_len,
                                    network=args.net,

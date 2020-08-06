@@ -24,11 +24,11 @@ parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 
 parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
-parser.add_argument('--batch_size', default=15, type=int)
+parser.add_argument('--batch_size', default=20, type=int)
 
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--split-mode', default="perc", type=str)
-parser.add_argument('--split-test-frac', default=0.2, type=float)
+parser.add_argument('--split-test-frac', default=0.1, type=float)
 
 parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for subsamples from available samples.')
 parser.add_argument('--max_samples', default=None, type=int, help='Sample instance limit.')
@@ -38,11 +38,11 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--ds_vid', default=1, type=int, help='Video downsampling rate')
 parser.add_argument('--img_dim', default=224, type=int)
 
-parser.add_argument('--model', default='skelcont', type=str)
-parser.add_argument('--rgb_net', default='r2+1d18', type=str)
+parser.add_argument('--model', default='skelcont-r21d', type=str, choices=["skelcont", "skelcont-r21d"])
+parser.add_argument('--rgb_net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
 parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--representation_size', default=512, type=int)
+parser.add_argument('--representation_size', default=128, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
@@ -53,7 +53,7 @@ parser.add_argument('--no_cache', action='store_true', default=False, help='Avoi
 
 parser.add_argument('--memory_contrast', default=None, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
-parser.add_argument('--memory_update_rate', default=0.03, type=float,
+parser.add_argument('--memory_update_rate', default=0.5, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
 parser.add_argument('--prox_reg_multiplier', default=None, type=float,
                     help='Penalty mutliplier for the new representation and its memory representation.')
@@ -107,7 +107,7 @@ def main():
         "sat_range":      (0.0, 1.3),
         "val_range":      (0.5, 1.5),
         "hue_prob":       1.,
-        "crop_arr_range": (0.4, 1.)
+        "crop_arr_range": (0.2, 1.)
         }
 
     best_acc = 0
@@ -206,8 +206,16 @@ def select_and_prepare_model(args):
         model = SkeleContrast(img_dim=args.img_dim,
                               seq_len=args.seq_len,
                               vid_backbone=args.rgb_net,
-                              representation_size=args.representation_size,
+                              crossm_vector_length=args.representation_size,
                               score_function=args.score_function)
+    elif args.model == "skelcont-r21d":
+        model = SkeleContrastR21D(vid_backbone='r2+1d18',
+                                  sk_backbone="sk-motion-7",
+                                  representation_size=512,
+                                  hidden_width=512,
+                                  debug=False,
+                                  random_seed=42
+                                  )
     else:
         raise ValueError('wrong model!')
 
