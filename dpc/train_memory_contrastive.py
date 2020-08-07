@@ -19,7 +19,7 @@ def training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_lo
         iteration, train_acc = train_skvid_mem_contrast(train_loader, memories, mem_queue, model, optimizer, criterion,
                                                         epoch, iteration, args, writer_train, cuda_device)
 
-        val_loss, val_acc, val_accuracy_list = tbc.validate(val_loader, model, criterion, cuda_device,
+        val_loss, val_acc = tbc.validate(val_loader, model, criterion, cuda_device,
                                                             epoch, args, writer_val)
 
         if args.use_dali:
@@ -79,6 +79,7 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
                 "time_memory_update":    AverageMeter(locality=args.print_freq),
                 "time_forward":          AverageMeter(locality=args.print_freq),
                 "time_backward":         AverageMeter(locality=args.print_freq),
+                "time_all":              AverageMeter(locality=args.print_freq),
 
                 "total_loss":            AverageMeter(locality=args.print_freq),
                 "sk_loss":               AverageMeter(locality=args.print_freq),
@@ -111,7 +112,7 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
 
     model.train()
 
-    tic = time.perf_counter()
+    time_all = time.perf_counter()
     start_time = time.perf_counter()
 
     for idx, out in enumerate(data_loader):
@@ -123,7 +124,7 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
 
         # Visualize images for tensorboard on two iterations.
         if (iteration == 0) or (iteration == args.print_freq):
-            write_out_images(vid_seq, stat_writer, iteration)
+            write_out_images(vid_seq, stat_writer, iteration, args.img_dim)
 
         # Memory selection.
         start_time = time.perf_counter()
@@ -149,7 +150,7 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
         # Forward pass: Calculation
         start_time = time.perf_counter()
 
-        score, targets, rep_vid, rep_sk = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont)
+        rep_vid, rep_sk, score, targets = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont)
 
         # Forward pass: Unpack results
         score_sk_to_rgb = score["sk_to_rgb"]
@@ -225,15 +226,17 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
         optimizer.step()
 
         tr_stats["time_backward"].update(time.perf_counter() - start_time)
+        tr_stats["time_all"].update(time.perf_counter() - time_all)
 
         if idx % args.print_freq == 0:
-            print_tr_stats_iteration_mem_contrast(tr_stats, epoch, idx, len(data_loader), time.perf_counter() - tic)
+            print_tr_stats_iteration_mem_contrast(tr_stats, epoch, idx, len(data_loader),
+                                                  time.perf_counter() - time_all)
+            write_stats_mem_contrast_iteration(tr_stats, stat_writer, iteration, args)
 
         iteration += 1
-        write_stats_mem_contrast_iteration(tr_stats, stat_writer, iteration, args)
 
         start_time = time.perf_counter()
-        tic = time.perf_counter()
+        time_all = time.perf_counter()
         # Next iteration
 
     # write_stats_mem_contrast_epoch(tr_stats, writer_train, epoch)

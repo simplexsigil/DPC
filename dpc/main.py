@@ -38,8 +38,9 @@ parser.add_argument('--seq_len', default=30, type=int, help='number of frames in
 parser.add_argument('--ds_vid', default=1, type=int, help='Video downsampling rate')
 parser.add_argument('--img_dim', default=224, type=int)
 
-parser.add_argument('--model', default='skelcont-r21d', type=str, choices=["skelcont", "skelcont-r21d"])
-parser.add_argument('--rgb_net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
+parser.add_argument('--model', default='sk-cont-resnet-dpc', type=str,
+                    choices=["sk-cont-resnet-dpc", "sk-cont-r21d", "sk-cont-resnet"])
+parser.add_argument('--rgb_net', default='resnet18', type=str, choices=['r2+1d18', 'resnet18', "r3d_18"])
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
 parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
 parser.add_argument('--representation_size', default=128, type=int)
@@ -202,13 +203,13 @@ def check_and_prepare_cuda(device_ids):
 
 
 def select_and_prepare_model(args):
-    if args.model == 'skelcont':
-        model = SkeleContrast(img_dim=args.img_dim,
-                              seq_len=args.seq_len,
-                              vid_backbone=args.rgb_net,
-                              crossm_vector_length=args.representation_size,
-                              score_function=args.score_function)
-    elif args.model == "skelcont-r21d":
+    if args.model == 'sk-cont-resnet-dpc':
+        model = SkeleContrastDPCResnet(img_dim=args.img_dim,
+                                       seq_len=args.seq_len,
+                                       vid_backbone=args.rgb_net,
+                                       representation_size=args.representation_size,
+                                       score_function=args.score_function)
+    elif args.model == "sk-cont-r21d":
         model = SkeleContrastR21D(vid_backbone='r2+1d18',
                                   sk_backbone="sk-motion-7",
                                   representation_size=512,
@@ -216,6 +217,14 @@ def select_and_prepare_model(args):
                                   debug=False,
                                   random_seed=42
                                   )
+    elif args.model == "sk-cont-resnet":
+        model = SkeleContrastResnet(vid_backbone='r2+1d18',
+                                    sk_backbone="sk-motion-7",
+                                    representation_size=512,
+                                    hidden_width=512,
+                                    debug=False,
+                                    random_seed=42
+                                    )
     else:
         raise ValueError('wrong model!')
 
