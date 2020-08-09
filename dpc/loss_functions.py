@@ -8,35 +8,37 @@ def memory_contrast_scores(x: torch.Tensor,
                            x_cont: torch.Tensor,
                            y_cont: torch.Tensor,
                            matching_fn: str,
-                           use_current_contrast=True,
+                           use_current_tp=False,
                            temp_tao=0.1,
                            contrast_type="cross") -> (torch.Tensor, torch.Tensor):
+    assert x_cont.shape[0] > 0
+    assert not (use_current_tp and contrast_type == "self"), "Self contrast can only be used when with memories."
+    assert matching_fn in ["cos-nt-xent"], f"Score function {matching_fn} not yet supported with mem contrast."
+
     if matching_fn == "cos-nt-xent":
         # Implement memory contrast
         # We always set the first vector to be the ground truth.
 
-        results_x = []
-        results_y = []
+        score_x = []
+        score_y = []
 
         batch_size = x.shape[0]
 
-        if use_current_contrast:
-            if x_cont.shape[0] > 0:
-                # To avoid batch contrast
-                x_calc = x_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
-                y_calc = y_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+        # To avoid batch contrast - We do not want to contrast with other reps.
+        # Each rep has its own copy of memories. Other solutions would include masking or selection processes.
+        x_calc = x_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+        y_calc = y_cont.unsqueeze(dim=0).repeat(batch_size, 1, 1)
+        # Shape (batch_size, contrast_size, rep_size)
 
-                x_tp = x_mem.view((batch_size, 1, -1))
-                y_tp = y_mem.view((batch_size, 1, -1))
+        if use_current_tp:  # A positive is the current rep of the other view.
+            x_tp = x.view((batch_size, 1, -1))
+            y_tp = y.view((batch_size, 1, -1))
+        else:  # A positive is the memory of the other view.
+            x_tp = x_mem.view((batch_size, 1, -1))
+            y_tp = y_mem.view((batch_size, 1, -1))
 
-                x_calc = torch.cat((x_tp, x_calc), dim=1)
-                y_calc = torch.cat((y_tp, y_calc), dim=1)
-            else:
-                x_calc = x.unsqueeze(dim=0).repeat(batch_size, 1, 1)
-                y_calc = y.unsqueeze(dim=0).repeat(batch_size, 1, 1)
-        else:
-            x_calc = torch.cat((x_mem, x_cont))
-            y_calc = torch.cat((y_mem, y_cont))
+        x_calc = torch.cat((x_tp, x_calc), dim=1)
+        y_calc = torch.cat((y_tp, y_calc), dim=1)
 
         for i in range(batch_size):
             # The scores are calculated between the output of one modality and the output
@@ -45,20 +47,23 @@ def memory_contrast_scores(x: torch.Tensor,
                 scores_x_i = pairwise_scores(x[i].view((1, -1)), y_calc[i], matching_fn=matching_fn)
                 scores_y_i = pairwise_scores(y[i].view((1, -1)), x_calc[i], matching_fn=matching_fn)
             elif contrast_type == "self":
-                scores_x_i = pairwise_scores(x[i].reshape((1, -1)), x_mem, matching_fn=matching_fn)
-                scores_y_i = pairwise_scores(y[i].reshape((1, -1)), y_mem, matching_fn=matching_fn)
+                scores_x_i = pairwise_scores(x[i].view((1, -1)), x_calc[i], matching_fn=matching_fn)
+                scores_y_i = pairwise_scores(y[i].view((1, -1)), y_calc[i], matching_fn=matching_fn)
             else:
                 raise ValueError
 
-            results_x.append(scores_x_i)
-            results_y.append(scores_y_i)
+            score_x.append(scores_x_i)
+            score_y.append(scores_y_i)
 
-        results_x = torch.cat(results_x, dim=0)
-        results_y = torch.cat(results_y, dim=0)
+        score_x = torch.cat(score_x, dim=0)
+        score_y = torch.cat(score_y, dim=0)
 
-        return results_x, results_y
+        target_x = torch.tensor([0] * batch_size, dtype=torch.long, device=x.device)
+        target_y = torch.tensor([0] * batch_size, dtype=torch.long, device=x.device)
     else:
         raise ValueError
+
+    return score_x, score_y, target_x, target_y
 
 
 def pairwise_scores(x: torch.Tensor,
@@ -124,13 +129,6 @@ def pairwise_scores(x: torch.Tensor,
 
         score = torch.matmul(x_norm, y_norm.transpose(0, 1))
         dst = torch.nn.functional.relu(x_sq - 2 * score + y_sq)
-
-        '''
-        eps_t = torch.full(d.shape, 1e-12)
-        is_zero = d.abs().lt(1e-12)
-
-        dst = torch.where(is_zero, eps_t, d)
-        '''
 
         dst = torch.sqrt(dst)
 

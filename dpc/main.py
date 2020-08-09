@@ -40,7 +40,7 @@ parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='sk-cont-resnet-dpc', type=str,
                     choices=["sk-cont-resnet-dpc", "sk-cont-r21d", "sk-cont-resnet"])
-parser.add_argument('--rgb_net', default='resnet18', type=str, choices=['r2+1d18', 'resnet18', "r3d_18"])
+parser.add_argument('--vid_backbone', default='resnet18', type=str, choices=['r2+1d18', 'resnet18', "r3d_18"])
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
 parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
 parser.add_argument('--representation_size', default=128, type=int)
@@ -52,16 +52,25 @@ parser.add_argument('--training_focus', default='all', type=str, help='Defines w
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 
+parser.add_argument('--save_best_val_loss', type=bool, default=False, help='Save model with best Val Loss.')
+parser.add_argument('--save_best_val_acc', type=bool, default=True, help='Save model with best Val Accuracy.')
+parser.add_argument('--save_best_train_loss', type=bool, default=False, help='Save model with best Train Loss.')
+parser.add_argument('--save_best_train_acc', type=bool, default=True, help='Save model with best Train Accuracy.')
+
 parser.add_argument('--memory_contrast', default=None, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
-parser.add_argument('--memory_update_rate', default=0.5, type=float,
+parser.add_argument('--memory_contrast_type', default="cross", type=str,
+                    help='How to perform memory contrast.')
+parser.add_argument('--memory_update_rate', default=0.3, type=float,
                     help='Update rate for the exponentially moving average of the representation memory.')
-parser.add_argument('--prox_reg_multiplier', default=None, type=float,
+parser.add_argument('--use_new_tp', action='store_true', default=False,
+                    help='New representations are used as true positives.')
+parser.add_argument('--prox_reg_multiplier', default=0.03, type=float,
                     help='Penalty mutliplier for the new representation and its memory representation.')
 
 parser.add_argument('--resume', default=None, type=str, help='path of model to resume')
-parser.add_argument('--reset_lr', action='store_true', help='Reset learning rate when resume training?')
 parser.add_argument('--start_epoch', default=0, type=int, help='Explicit epoch to start form.')
+parser.add_argument('--start_iteration', default=0, type=int, help='Explicit iteration to start form.')
 
 parser.add_argument('--pretrain', default=None, type=str, help='path of pretrained model')
 
@@ -103,12 +112,12 @@ def argument_checks(args):
 def main():
     # TODO: Set with arguments.
     augmentation_settings = {
-        "rot_range":      (-30, 30),
-        "hue_range":      (-180, 180),
-        "sat_range":      (0.0, 1.3),
-        "val_range":      (0.5, 1.5),
+        "rot_range":      (-3, 3),
+        "hue_range":      (-30, 30),
+        "sat_range":      (0.8, 1.2),
+        "val_range":      (0.8, 1.2),
         "hue_prob":       1.,
-        "crop_arr_range": (0.2, 1.)
+        "crop_arr_range": (0.9, 1.)
         }
 
     best_acc = 0
@@ -150,17 +159,18 @@ def main():
     start_epoch = 0
 
     if args.resume:  # Resume a training which was interrupted.
-        model, optimizer, start_epoch, iteration, best_acc, lr = prepare_on_resume(model, optimizer,
-                                                                                   None if args.reset_lr else args.lr,
-                                                                                   args.resume, args)
-        args.lr = lr
+        model, optimizer, args = prepare_on_resume(model, optimizer, args)
 
     elif args.pretrain:  # Load a pretrained model
         # The difference to resuming: We do not expect the same model.
         # In this case, only some of the pretrained weights are used.
         model = prepare_on_pretrain(model, args.pretrain, args)
     else:
-        pass  # Normal case, no resuming, not pretraining.
+        # Normal case, no resuming, not pretraining.
+        args.best_train_loss = None
+        args.best_train_acc = None
+        args.best_val_loss = None
+        args.best_val_acc = None
 
     transform = prepare_augmentations(augmentation_settings, args)
 
@@ -172,12 +182,11 @@ def main():
     val_loader, val_len = get_data(transform, 'val', args, augmentation_settings)
 
     if args.memory_contrast is not None:
-        tmc.training_loop_mem_contrast(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                                       args, cuda_device, best_acc=best_acc, best_epoch=start_epoch,
-                                       iteration=iteration)
+        tmc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
+                          args, cuda_device)
     else:
         tbc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                          args, cuda_device, best_acc=best_acc, best_epoch=start_epoch, iteration=iteration)
+                          args, cuda_device)
 
 
 def check_and_prepare_cuda(device_ids):
@@ -206,11 +215,11 @@ def select_and_prepare_model(args):
     if args.model == 'sk-cont-resnet-dpc':
         model = SkeleContrastDPCResnet(img_dim=args.img_dim,
                                        seq_len=args.seq_len,
-                                       vid_backbone=args.rgb_net,
+                                       vid_backbone=args.vid_backbone,
                                        representation_size=args.representation_size,
                                        score_function=args.score_function)
     elif args.model == "sk-cont-r21d":
-        model = SkeleContrastR21D(vid_backbone='r2+1d18',
+        model = SkeleContrastR21D(vid_backbone=args.vid_backbone,
                                   sk_backbone="sk-motion-7",
                                   representation_size=512,
                                   hidden_width=512,
@@ -218,7 +227,7 @@ def select_and_prepare_model(args):
                                   random_seed=42
                                   )
     elif args.model == "sk-cont-resnet":
-        model = SkeleContrastResnet(vid_backbone='r2+1d18',
+        model = SkeleContrastResnet(vid_backbone=args.vid_backbone,
                                     sk_backbone="sk-motion-7",
                                     representation_size=512,
                                     hidden_width=512,
@@ -247,33 +256,35 @@ def check_and_prepare_parameters(model, training_focus):
     print('=================================\n')
 
 
-def prepare_on_resume(model, optimizer, lr, resume_file, args):
-    if not os.path.isfile(resume_file):
+def prepare_on_resume(model, optimizer, args):
+    if not os.path.isfile(args.resume):
         print("####\n[Warning] no checkpoint found at '{}'\n####".format(args.resume))
         raise FileNotFoundError
     else:
-        old_lr = float(re.search('_lr(.+?)_', resume_file).group(1))
+        print("=> loading resumed checkpoint '{}'".format(args.resume))
 
-        print("=> loading resumed checkpoint '{}'".format(resume_file))
+        checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
 
-        checkpoint = torch.load(resume_file, map_location=torch.device('cpu'))
+        args.model = checkpoint['model']
+        args.vid_backbone = checkpoint['vid_backbone']
 
-        epoch = checkpoint['epoch']
-        iteration = checkpoint['iteration']
-        best_acc = checkpoint['best_acc']
+        args.lr = checkpoint['lr']
 
-        # I assume this copies the CPU located parameters automatically to cuda.
+        args.start_epoch = checkpoint['epoch']
+        args.start_iteration = checkpoint['iteration']
+
+        args.best_train_loss = checkpoint['best_train_loss']
+        args.best_train_acc = checkpoint['best_train_acc']
+        args.best_val_loss = checkpoint['best_val_loss']
+        args.best_val_acc = checkpoint['best_val_acc']
+
         model.load_state_dict(checkpoint['state_dict'])
 
-        if not lr:  # If not explicitly reset, load old optimizer.
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            lr = old_lr
-        else:
-            print('==== Resuming with lr {:.1e} (Last lr: {:.1e}) ===='.format(lr, old_lr))
+        optimizer.load_state_dict(checkpoint['optimizer'])
 
-        print("=> loaded resumed checkpoint (epoch {}, lr {}) '{}' ".format(epoch, lr, resume_file))
+        print("=> loaded resumed checkpoint (epoch {}) '{}' ".format(args.start_epoch, args.resume))
 
-        return model, optimizer, epoch, iteration, best_acc, lr
+        return model, optimizer, args
 
 
 def prepare_on_pretrain(model, pretrain_file, args):

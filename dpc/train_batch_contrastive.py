@@ -6,8 +6,13 @@ import loss_functions
 from utils import AverageMeter, calc_topk_accuracy, write_out_images, write_out_checkpoint
 
 
-def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
-                  args, cuda_device, best_acc=0.0, best_epoch=0, iteration=0):
+def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val, args, cuda_device):
+    iteration = args.start_iteration
+    best_val_acc = args.best_val_acc
+    best_val_loss = args.best_val_loss
+    best_train_acc = args.best_train_acc
+    best_train_loss = args.best_train_loss
+
     # Main loop
     for epoch in range(args.start_epoch, args.epochs):
         iteration, train_loss, train_acc = train_skvid_batch_contrast(train_loader, model, optimizer, criterion,
@@ -16,13 +21,16 @@ def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_
         val_loss, val_acc = validate(val_loader, model, criterion, cuda_device,
                                      epoch, args, writer_val)
 
-        is_best = val_acc > best_acc
-        best_acc = val_acc if is_best else best_acc
-        best_epoch = epoch if is_best else best_epoch
+        best_val_acc = val_acc if best_val_acc is None or val_acc > best_val_acc else best_val_acc
+        best_val_loss = val_loss if best_val_loss is None or val_loss < best_val_loss else best_val_loss
 
-        write_out_checkpoint(epoch, iteration, model, optimizer, args, train_loss, train_acc, val_loss, val_acc,
-                             best_acc,
-                             best_epoch)
+        best_train_acc = train_acc if best_train_acc is None or train_acc > best_train_acc else best_train_acc
+        best_train_loss = train_loss if best_train_loss is None or train_loss < best_train_loss else best_train_loss
+
+        write_out_checkpoint(epoch, iteration, model, optimizer, args,
+                             train_loss, train_acc, val_loss, val_acc,
+                             best_train_loss, best_train_acc, best_val_loss, best_val_acc)
+
         if args.use_dali:
             train_loader.reset()
             val_loader.reset()
@@ -63,8 +71,6 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         batch_size = vid_seq.size(0)
 
         tr_stats["time_data_loading"].update(time.perf_counter() - dl_time)
-
-        # vid_seq = vid_seq[:, :, ::4, :, :]  # as a test only use 8 images instead of 30
 
         # Visualize images for tensorboard.
         if iteration == 0:
