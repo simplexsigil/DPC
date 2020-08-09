@@ -30,21 +30,13 @@ def write_out_images(img_seq, writer, iteration, img_dim=224):
     writer.add_image('input_seq', de_norm_imgs, iteration)
 
 
-def save_checkpoint(state, is_best=0, model_path='models/checkpoint.pth.tar'):
-    model_last = os.path.join(model_path, 'model_last.pth.tar')
+def save_checkpoint(state, model_name="model_last.pth.tar", model_path='models'):
+    model_last = os.path.join(model_path, model_name)
 
     torch.save(state, model_last + ".tmp")  # This way there is always a valid file.
     torch.save(state, model_last)
 
     os.remove(model_last + ".tmp")
-
-    if is_best:
-        model_best = os.path.join(model_path, 'model_best.pth.tar')
-
-        torch.save(state, model_best + ".tmp")  # This way there is always a valid file.
-        torch.save(state, model_best)
-
-        os.remove(model_best + ".tmp")
 
 
 def write_log(content, epoch, filename):
@@ -249,23 +241,52 @@ def random_image_crop_square(min_area_n=0.4, max_area_n=1, image_width=150, imag
     return crop_length_x, crop_length_y, crop_pos_x_norm, crop_pos_y_norm
 
 
-def write_out_checkpoint(epoch, iteration, model, optimizer, args, train_loss, train_acc, val_loss, val_acc, best_acc,
-                         best_epoch):
-    is_best = val_acc == best_acc
+def write_out_checkpoint(epoch, iteration, model, optimizer, args, train_loss, train_acc, val_loss, val_acc,
+                         best_train_loss, best_train_acc, best_val_loss, best_val_acc):
+    state = {'epoch':           epoch + 1,
+             'iteration':       iteration,
+             'model':           args.model,
+             'vid_backbone':    args.vid_backbone,
+             'state_dict':      model.state_dict(),
+             'optimizer':       optimizer.state_dict(),
+             'lr':              args.lr,
+             'best_train_loss': best_train_loss,
+             'best_train_acc':  best_train_acc,
+             'best_val_loss':   best_val_loss,
+             'best_val_acc':    best_val_acc,
+             'train_loss':      train_loss,
+             'train_acc':       train_acc,
+             'val_loss':        val_loss,
+             'val_acc':         val_acc
+             }
 
-    save_checkpoint({'epoch':      epoch + 1,
-                     'net':        args.rgb_net,
-                     'state_dict': model.state_dict(),
-                     'optimizer':  optimizer.state_dict(),
-                     'best_acc':   best_acc,
-                     'train_loss': train_loss,
-                     'train_acc':  train_acc,
-                     'val_loss':   val_loss,
-                     'val_acc':    val_acc,
-                     'iteration':  iteration},
-                    is_best,
+    save_checkpoint(state=state,
+                    model_name="model_last.pth.tar",
                     model_path=args.model_path)
 
+    if args.save_best_val_acc and val_acc == best_val_acc:
+        save_checkpoint(state=state,
+                        model_name="model_best_val_acc.pth.tar",
+                        model_path=args.model_path)
+
+    if args.save_best_val_loss and val_loss == best_val_loss:
+        save_checkpoint(state=state,
+                        model_name="model_best_val_loss.pth.tar",
+                        model_path=args.model_path)
+
+    if args.save_best_train_acc and train_acc == best_train_acc:
+        save_checkpoint(state=state,
+                        model_name="model_best_train_acc.pth.tar",
+                        model_path=args.model_path)
+
+    if args.save_best_train_loss and train_loss == best_train_loss:
+        save_checkpoint(state=state,
+                        model_name="model_best_train_loss.pth.tar",
+                        model_path=args.model_path)
+
     with open(os.path.join(args.model_path, "training_state.log"), 'a') as f:
-        f.write(f"Epoch: {epoch + 1:4} | Acc Train: {train_acc:1.4f} | Acc Val: {val_acc:1.4f} | "
-                f"Best Acc Val: {best_acc:1.4f} | Best Epoch: {best_epoch + 1:4}\n")
+        f.write(f"Epoch: {epoch + 1:4} | "
+                f"Loss Train: {train_loss:1.4f} | Acc Train: {train_acc:1.4f} | "
+                f"Loss Val: {val_loss:1.4f} | Acc Val: {val_acc:1.4f} | "
+                f"Best Loss Train: {best_train_loss:1.4f} | Best Acc Train: {best_train_acc:1.4f} | "
+                f"Best Loss Val: {best_val_loss:1.4f} | Best Acc Val: {best_val_acc:1.4f}\n")
