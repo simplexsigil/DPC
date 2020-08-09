@@ -10,7 +10,7 @@ from torch.utils import data
 from tqdm import tqdm
 
 from augmentation import *
-from datasets.dataset import DatasetUtils
+from dataset import DatasetUtils
 
 
 class Kinetics400Dataset(data.Dataset):

@@ -3,8 +3,11 @@ import time
 import torch
 
 import loss_functions
-from utils import AverageMeter, calc_topk_accuracy, write_out_images, write_out_checkpoint
 
+import sys
+sys.path.insert(0, '../utils')
+
+from utils import AverageMeter, calc_topk_accuracy, write_out_images, write_out_checkpoint
 
 def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
                   args, cuda_device, best_acc=0.0, best_epoch=0, iteration=0):

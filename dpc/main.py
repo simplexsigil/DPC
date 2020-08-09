@@ -3,13 +3,18 @@ from datetime import datetime
 
 from tensorboardX import SummaryWriter
 
+import sys
+sys.path.insert(0, '../utils')
+sys.path.insert(0, '../backbone')
+sys.path.insert(0, '../datasets')
+
 import train_batch_contrastive as tbc
 import train_memory_contrastive as tmc
 from augmentation import *
 from dataset_kinetics import Kinetics400Dataset
 from dataset_ucf101 import UCF101Dataset
-from datasets.dataset_nturgbd import *
-from datasets.dataset_nturgbd_dali import *
+from dataset_nturgbd import *
+from dataset_nturgbd_dali import *
 from model_3d import *
 from resnet_2d3d import neq_load_customized
 
@@ -41,8 +46,8 @@ parser.add_argument('--img_dim', default=224, type=int)
 parser.add_argument('--model', default='skelcont-r21d', type=str, choices=["skelcont", "skelcont-r21d"])
 parser.add_argument('--rgb_net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
-parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
-parser.add_argument('--representation_size', default=128, type=int)
+parser.add_argument('--temperature', default=0.1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--representation_size', default=512, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
@@ -117,6 +122,8 @@ def main():
     np.random.seed(0)
 
     args = parser.parse_args()
+    print(args)
+    print(augmentation_settings)
 
     args = argument_checks(args)
 
