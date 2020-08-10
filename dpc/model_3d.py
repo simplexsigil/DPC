@@ -166,6 +166,7 @@ class SkeleContrastR21D(nn.Module):
         block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
 
         features = self.sk_backbone(block_sk)
+        features = self.sk_fc_rep(features)
 
         is_zero = features == 0.0
 
@@ -280,7 +281,7 @@ class SkeleContrastResnet(nn.Module):
 
         self.debug = debug
 
-        if "resnet" in vid_backbone:
+        if "r3d_" in vid_backbone:
             if vid_backbone == "r3d_18":
                 print('The video backbone is the 3D Resnet-18 network.')
                 self.vid_backbone = torchvision.models.video.r3d_18(pretrained=False, num_classes=hidden_width)
@@ -323,6 +324,7 @@ class SkeleContrastResnet(nn.Module):
         block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
 
         features = self.sk_backbone(block_sk)
+        features = self.sk_fc_rep(features)
 
         is_zero = features == 0.0
 
@@ -418,12 +420,14 @@ class SkeleContrastDPCResnet(nn.Module):
     def __init__(self,
                  img_dim,
                  seq_len=30,
+                 downsampling=1,
                  vid_backbone='resnet18',
                  sk_backbone="sk-motion-7",
                  representation_size=512,
                  hidden_width=512,
                  score_function="dot",
                  contrast_type="cross",
+                 swav_prototype_count=0,
                  debug=False):
         super(SkeleContrastDPCResnet, self).__init__()
 
@@ -435,7 +439,7 @@ class SkeleContrastDPCResnet(nn.Module):
         self.score_function = score_function
 
         self.vid_dim = img_dim
-        self.seq_len = seq_len
+        self.seq_len = seq_len // downsampling
 
         self.vid_backbone_name = vid_backbone
         self.sk_backbone_name = sk_backbone
@@ -446,10 +450,14 @@ class SkeleContrastDPCResnet(nn.Module):
         self.contrast_type = contrast_type
         self.debug = debug
 
+        self.swav_prototype_count = swav_prototype_count
+
         self.last_duration = int(math.ceil(self.seq_len / 4))  # This is the sequence length after using the backbone
         self.last_size = int(math.ceil(self.vid_dim / 32))  # Final feature map has size (last_size, last_size)
 
         self.vid_backbone, self.param = select_resnet(vid_backbone, track_running_stats=False)
+
+        print(f'The video backbone is the 2D3D {vid_backbone} network.')
 
         self.param['hidden_size'] = self.param['feature_size']
 
@@ -481,6 +489,11 @@ class SkeleContrastDPCResnet(nn.Module):
             nn.Linear(self.hidden_width, self.representation_size),
             )
 
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            print(
+                f"Using {self.swav_prototype_count} SWAV prototypes.")
+            self.prototypes = nn.Linear(self.representation_size, self.swav_prototype_count, bias=False)
+
         _initialize_weights(self.vid_fc1)
         _initialize_weights(self.vid_fc2)
         _initialize_weights(self.vid_fc_rep)
@@ -488,6 +501,7 @@ class SkeleContrastDPCResnet(nn.Module):
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
 
+        print(f"This model has {sum(p.numel() for p in self.parameters() if p.requires_grad)} trainable parameters.")
         print("=================================")
 
     def _forward_sk(self, block_sk):
@@ -632,14 +646,14 @@ def memory_contrast_scores(x: torch.Tensor,
             # of the other modality. The first vectors are the ground truth (other modality).
             if contrast_type == "cross":
                 scores_x_i = pairwise_scores(x[i].view((1, -1)), y_calc[i],
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
                 scores_y_i = pairwise_scores(y[i].view((1, -1)), x_calc[i],
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
             elif contrast_type == "self":
                 scores_x_i = pairwise_scores(x[i].reshape((1, -1)), x_mem,
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
                 scores_y_i = pairwise_scores(y[i].reshape((1, -1)), y_mem,
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
             else:
                 raise ValueError
 

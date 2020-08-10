@@ -5,6 +5,7 @@ from tensorboardX import SummaryWriter
 
 import train_batch_contrastive as tbc
 import train_memory_contrastive as tmc
+import train_swav as tsv
 from augmentation import *
 from dataset_kinetics import Kinetics400Dataset
 from dataset_ucf101 import UCF101Dataset
@@ -24,7 +25,7 @@ parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 
 parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
-parser.add_argument('--batch_size', default=20, type=int)
+parser.add_argument('--batch_size', default=15, type=int)
 
 parser.add_argument('--dataset', default='nturgbd', type=str)
 parser.add_argument('--split-mode', default="perc", type=str)
@@ -42,8 +43,9 @@ parser.add_argument('--model', default='sk-cont-resnet-dpc', type=str,
                     choices=["sk-cont-resnet-dpc", "sk-cont-r21d", "sk-cont-resnet"])
 parser.add_argument('--vid_backbone', default='resnet18', type=str, choices=['r2+1d18', 'resnet18', "r3d_18"])
 parser.add_argument('--score_function', default='cos-nt-xent', type=str)
-parser.add_argument('--temperature', default=1, type=float, help='Termperature value used for score functions.')
+parser.add_argument('--temperature', default=0.01, type=float, help='Termperature value used for score functions.')
 parser.add_argument('--representation_size', default=128, type=int)
+parser.add_argument('--hidden_size', default=512, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
@@ -57,6 +59,20 @@ parser.add_argument('--save_best_val_acc', type=bool, default=True, help='Save m
 parser.add_argument('--save_best_train_loss', type=bool, default=False, help='Save model with best Train Loss.')
 parser.add_argument('--save_best_train_acc', type=bool, default=True, help='Save model with best Train Accuracy.')
 
+parser.add_argument('--training_type', type=str, default="batch_contrast",
+                    choices=["batch_contrast", "memory_contrast", "swav"], help='Type of training.')
+
+# SWAV specific params
+parser.add_argument('--swav_prototypes', type=int, default=3000, help='Use SWAV training.')
+parser.add_argument("--sinkhorn_knopp_epsilon", default=0.05, type=float,
+                    help="regularization parameter for Sinkhorn-Knopp algorithm")
+parser.add_argument("--sinkhorn_iterations", default=3, type=int,
+                    help="number of iterations in Sinkhorn-Knopp algorithm")
+parser.add_argument("--freeze_prototypes_niters", default=313, type=int,
+                    help="freeze the prototypes during this many iterations from the start")
+parser.add_argument("--swav_warmup_epochs", default=10, type=int, help="number of warmup epochs")
+
+# Memory Contrast specific params
 parser.add_argument('--memory_contrast', default=None, type=int,
                     help='Number of contrast vectors. Batch contrast is used if not applied.')
 parser.add_argument('--memory_contrast_type', default="cross", type=str,
@@ -181,10 +197,15 @@ def main():
     train_loader, train_len = get_data(transform, 'train', args, augmentation_settings)
     val_loader, val_len = get_data(transform, 'val', args, augmentation_settings)
 
-    if args.memory_contrast is not None:
+    if args.training_type == "swav":
+        tsv.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
+                          args, cuda_device)
+
+    elif args.training_type == "memory_contrast":
         tmc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
                           args, cuda_device)
-    else:
+
+    elif args.training_type == "batch_contrast":
         tbc.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
                           args, cuda_device)
 
@@ -213,24 +234,28 @@ def check_and_prepare_cuda(device_ids):
 
 def select_and_prepare_model(args):
     if args.model == 'sk-cont-resnet-dpc':
+        # The dpc resnet produces reasonable results and is a lot faster to train. Great for development.
         model = SkeleContrastDPCResnet(img_dim=args.img_dim,
                                        seq_len=args.seq_len,
+                                       downsampling=args.ds_vid,
                                        vid_backbone=args.vid_backbone,
                                        representation_size=args.representation_size,
-                                       score_function=args.score_function)
+                                       hidden_width=args.hidden_size,
+                                       score_function=args.score_function,
+                                       swav_prototype_count=args.swav_prototypes if args.training_type == "swav" else 0)
     elif args.model == "sk-cont-r21d":
         model = SkeleContrastR21D(vid_backbone=args.vid_backbone,
                                   sk_backbone="sk-motion-7",
-                                  representation_size=512,
-                                  hidden_width=512,
+                                  representation_size=args.representation_size,
+                                  hidden_width=args.hidden_size,
                                   debug=False,
                                   random_seed=42
                                   )
     elif args.model == "sk-cont-resnet":
         model = SkeleContrastResnet(vid_backbone=args.vid_backbone,
                                     sk_backbone="sk-motion-7",
-                                    representation_size=512,
-                                    hidden_width=512,
+                                    representation_size=args.representation_size,
+                                    hidden_width=args.hidden_size,
                                     debug=False,
                                     random_seed=42
                                     )

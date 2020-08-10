@@ -345,19 +345,24 @@ def write_stats_mem_contrast_iteration(tr_stats, writer_train, iteration, args):
     writer_train.add_scalars('it/Rep to own Mem Sim', mem_sim_dict, iteration)
 
     all_calced_timings = sum([tr_stats[tms].local_avg for tms in ["time_data_loading",
+                                                                  "time_memory_selection",
                                                                   "time_cuda_transfer",
                                                                   "time_forward",
                                                                   "time_scoring",
+                                                                  "time_memory_update",
                                                                   "time_backward",
                                                                   ]])
-    timing_dict = {'Loading Data':                 tr_stats["time_data_loading"].local_avg,
-                   'Cuda Transfer':                tr_stats["time_cuda_transfer"].local_avg,
-                   'Forward Pass':                 tr_stats["time_forward"].local_avg,
-                   'Scoring':                      tr_stats["time_scoring"].local_avg,
-                   'Backward Pass':                tr_stats["time_backward"].local_avg,
-                   'Loading + Transfer + '
-                   'Forward + Scoring + Backward': all_calced_timings,
-                   'All':                          tr_stats["time_all"].local_avg
+    timing_dict = {'Loading Data':                       tr_stats["time_data_loading"].local_avg,
+                   'Memory Selection':                   tr_stats["time_memory_selection"].local_avg,
+                   'Cuda Transfer':                      tr_stats["time_cuda_transfer"].local_avg,
+                   'Forward Pass':                       tr_stats["time_forward"].local_avg,
+                   'Scoring':                            tr_stats["time_scoring"].local_avg,
+                   'Memory Update':                      tr_stats["time_memory_update"].local_avg,
+                   'Backward Pass':                      tr_stats["time_backward"].local_avg,
+                   'Loading + Memory Selection + '
+                   'Transfer + Forward + '
+                   'Scoring + Memory Update + Backward': all_calced_timings,
+                   'All':                                tr_stats["time_all"].local_avg
                    }
 
     writer_train.add_scalars('it/Batch-Wise_Timings', timing_dict, iteration)
