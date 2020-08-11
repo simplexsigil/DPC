@@ -163,8 +163,7 @@ def train_skvid_mem_contrast(data_loader, memories, mem_queue, model, optimizer,
         # Forward pass: Calculation
         start_time = time.perf_counter()
 
-        rep_vid, rep_sk = model(vid_seq, sk_seq, mem_vid, mem_sk, mem_vid_cont, mem_sk_cont,
-                                no_scoring=True)
+        rep_vid, rep_sk = model(vid_seq, sk_seq)
 
         tr_stats["time_forward"].update(time.perf_counter() - start_time)
 

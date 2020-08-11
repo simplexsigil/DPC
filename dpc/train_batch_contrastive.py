@@ -88,7 +88,7 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         # Forward pass: Calculation
         s_forw_time = time.perf_counter()
 
-        repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_scoring=True)
+        repr_vid, repr_sk = model(vid_seq, sk_seq)
 
         e_forw_time = time.perf_counter()
         tr_stats["time_forward"].update(e_forw_time - s_forw_time)
