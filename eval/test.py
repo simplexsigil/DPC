@@ -18,9 +18,8 @@ from augmentation import *
 from dataset_hmdb51 import HMDB51Dataset
 from dataset_ucf101 import UCF101Dataset
 from model_3d_lc import *
-from resnet_2d3d import neq_load_customized
 from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
-    write_out_images
+    write_out_images, write_out_checkpoint
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--prefix', default='tmp_r21d', type=str)
@@ -41,7 +40,7 @@ parser.add_argument('--ds', default=2, type=int)
 parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "dpc-resnet", "r2+1d"])
-parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
+parser.add_argument('--vid_backbone', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--hidden_width', default=512, type=int)
@@ -54,6 +53,11 @@ parser.add_argument('--fine_tuning', default=0.1, type=float, help='A ratio whic
                                                                    'Backbone will be frozen if 0.')
 
 parser.add_argument('--print_freq', default=5, type=int)
+
+parser.add_argument('--save_best_val_loss', type=bool, default=False, help='Save model with best Val Loss.')
+parser.add_argument('--save_best_val_acc', type=bool, default=True, help='Save model with best Val Accuracy.')
+parser.add_argument('--save_best_train_loss', type=bool, default=False, help='Save model with best Train Loss.')
+parser.add_argument('--save_best_train_acc', type=bool, default=True, help='Save model with best Train Accuracy.')
 
 parser.add_argument('--pretrain',
                     default='/home/david/workspaces/cvhci/experiment_results/pretraining_batch_contrast_kinetics_r21d/2020-08-07_01-44-34_training_exp-000/model/model_best.pth.tar',
@@ -109,7 +113,12 @@ def main():
     iteration = 0
 
     if args.resume:
-        prepare_resume(model, optimizer)
+        prepare_resume(model, optimizer, args)
+    else:
+        args.best_train_loss = None
+        args.best_train_acc = None
+        args.best_val_loss = None
+        args.best_val_acc = None
 
     if (not args.resume) and args.pretrain:
         if args.pretrain == 'random':
@@ -156,23 +165,26 @@ def main():
         writer_val = SummaryWriter(logdir=os.path.join(img_path, 'val'))
         writer_train = SummaryWriter(logdir=os.path.join(img_path, 'train'))
 
+    best_val_acc = args.best_val_acc
+    best_val_loss = args.best_val_loss
+    best_train_acc = args.best_train_acc
+    best_train_loss = args.best_train_loss
+
     ### main loop ###
     for epoch in range(args.start_epoch, args.epochs):
         train_loss, train_acc = train(train_loader, model, optimizer, epoch, args)
         val_loss, val_acc = validate(val_loader, model, epoch, args)
-        scheduler.step(epoch)
+        scheduler.step()
 
-        # save check_point
-        is_best = val_acc > best_acc
-        best_acc = max(val_acc, best_acc)
-        save_checkpoint({
-            'epoch':      epoch + 1,
-            'net':        args.net,
-            'state_dict': model.state_dict(),
-            'best_acc':   best_acc,
-            'optimizer':  optimizer.state_dict(),
-            'iteration':  iteration
-            }, is_best, model_path=model_path)
+        best_val_acc = val_acc if best_val_acc is None or val_acc > best_val_acc else best_val_acc
+        best_val_loss = val_loss if best_val_loss is None or val_loss < best_val_loss else best_val_loss
+
+        best_train_acc = train_acc if best_train_acc is None or train_acc > best_train_acc else best_train_acc
+        best_train_loss = train_loss if best_train_loss is None or train_loss < best_train_loss else best_train_loss
+
+        write_out_checkpoint(epoch, iteration, model, optimizer, args,
+                             train_loss, train_acc, val_loss, val_acc,
+                             best_train_loss, best_train_acc, best_val_loss, best_val_acc)
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
@@ -437,13 +449,19 @@ def get_data(transform, args, mode='train'):
     return data_loader
 
 
-def prepare_resume(model, optimizer):
+def prepare_resume(model, optimizer, args):
     if os.path.isfile(args.resume):
         args.old_lr = float(re.search('_lr(.+?)_', args.resume).group(1))
         print("=> loading resumed checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume, map_location=torch.device('cpu'))
         args.start_epoch = checkpoint['epoch']
-        best_acc = checkpoint['best_acc']
+        args.start_iteration = checkpoint['iteration']
+
+        args.best_train_loss = checkpoint['best_train_loss']
+        args.best_train_acc = checkpoint['best_train_acc']
+        args.best_val_loss = checkpoint['best_val_loss']
+        args.best_val_acc = checkpoint['best_val_acc']
+
         model.load_state_dict(checkpoint['state_dict'])
         if not args.reset_lr:  # if didn't reset lr, load old optimizer
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -473,7 +491,7 @@ def prepare_optimizer(model, args):
 
         params = []
         for name, param in model.module.named_parameters():
-            if ("backbone" in name) or ("dpc_feature_conversion" in name):
+            if ("backbone" in name) or ("vid_fc" in name):
                 pass
             else:
                 params.append({'params': param})
@@ -489,7 +507,7 @@ def prepare_optimizer(model, args):
         print(f"{'Name':<42} {'Requires Grad':<6} Learning Rate")
         params = []
         for name, param in model.module.named_parameters():
-            if ("backbone" in name) or ("dpc_feature_conversion" in name):
+            if ("backbone" in name) or ("vid_fc" in name):
                 params.append({'params': param, 'lr': args.lr * args.fine_tuning})
                 print(f"{name:<50} {str(param.requires_grad):<6} {args.lr * args.fine_tuning}")
             else:
@@ -517,7 +535,7 @@ def select_model(args):
     if args.model == "dpc-resnet":
         model = Resnet18Classifier(sample_size=args.img_dim,
                                    seq_len=args.seq_len,
-                                   network=args.net,
+                                   network=args.vid_backbone,
                                    num_class=args.num_class,
                                    dropout=args.dropout,
                                    crossm_vector_length=args.representation_size
@@ -525,7 +543,7 @@ def select_model(args):
     elif args.model == "r2+1d":
         model = R2plus1DClassifier(sample_size=args.img_dim,
                                    seq_len=args.seq_len,
-                                   backbone=args.net,
+                                   backbone=args.vid_backbone,
                                    num_class=args.num_class,
                                    dropout=args.dropout,
                                    representation_size=args.representation_size,
