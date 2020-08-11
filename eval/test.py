@@ -37,14 +37,14 @@ parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for 
 parser.add_argument('--max_samples', default=None, type=int, help='Limit for samples.')
 
 parser.add_argument('--seq_len', default=30, type=int)
-parser.add_argument('--ds', default=1, type=int)
-parser.add_argument('--img_dim', default=128, type=int)
+parser.add_argument('--ds', default=2, type=int)
+parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "dpc-resnet", "r2+1d"])
 parser.add_argument('--net', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
-parser.add_argument('--hidden_fc_width', default=512, type=int)
+parser.add_argument('--hidden_width', default=512, type=int)
 parser.add_argument('--num_class', default=51, type=int)
 
 parser.add_argument('--lr', default=1e-4, type=float)
@@ -56,7 +56,7 @@ parser.add_argument('--fine_tuning', default=0.1, type=float, help='A ratio whic
 parser.add_argument('--print_freq', default=5, type=int)
 
 parser.add_argument('--pretrain',
-                    default='/home/david/temp/training_logs/test_temp/2020-08-01_02-46-13_training_exp-300-r21dbc/model/model_best_ep13.pth.tar',
+                    default='/home/david/workspaces/cvhci/experiment_results/pretraining_batch_contrast_kinetics_r21d/2020-08-07_01-44-34_training_exp-000/model/model_best.pth.tar',
                     type=str)
 
 parser.add_argument('--resume', default='', type=str)
@@ -118,7 +118,6 @@ def main():
             checkpoint = torch.load(args.pretrain, map_location=torch.device('cpu'))
 
             model.module.load_weights_state_dict(checkpoint['state_dict'], model=model)
-            print()
             print("=> loaded pretrained checkpoint '{}' (epoch {})".format(args.pretrain, checkpoint['epoch']))
         else:
             print("=> no checkpoint found at '{}'".format(args.pretrain))
@@ -530,7 +529,7 @@ def select_model(args):
                                    num_class=args.num_class,
                                    dropout=args.dropout,
                                    representation_size=args.representation_size,
-                                   hidden_fc_width=args.hidden_fc_width
+                                   hidden_fc_width=args.hidden_width
                                    )
     else:
         raise ValueError('wrong model!')

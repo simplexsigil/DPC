@@ -30,7 +30,7 @@ def get_debug_hook_grad(name):
             torch.any(grad == 0.0),
             torch.min(grad),
             torch.max(grad)
-            ))
+        ))
 
         return grad
 
@@ -135,12 +135,12 @@ class SkeleContrastR21D(nn.Module):
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-            )
+        )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
 
         if "sk-motion" in sk_backbone:
             if "sk-motion-7" == self.sk_backbone_name:
@@ -150,7 +150,7 @@ class SkeleContrastR21D(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
 
         _initialize_weights(self.vid_fc2)
         _initialize_weights(self.vid_fc_rep)
@@ -166,6 +166,7 @@ class SkeleContrastR21D(nn.Module):
         block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
 
         features = self.sk_backbone(block_sk)
+        features = self.sk_fc_rep(features)
 
         is_zero = features == 0.0
 
@@ -189,15 +190,12 @@ class SkeleContrastR21D(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk,
-                mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None, no_scoring=False):
+    def forward(self, block_rgb, block_sk):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
         if self.debug:
             SkeleContrastR21D.check_inputs(block_rgb, block_sk)
-
-        bs = block_rgb.shape[0]
 
         rep_vid = self._forward_rgb(block_rgb)
         rep_sk = self._forward_sk(block_sk)
@@ -208,41 +206,7 @@ class SkeleContrastR21D(nn.Module):
         rep_vid = rep_vid / torch.norm(rep_vid, dim=1, keepdim=True)
         rep_sk = rep_sk / torch.norm(rep_sk, dim=1, keepdim=True)
 
-        if no_scoring:
-            return rep_vid, rep_sk
-
-        # The score is now calculated according to the other modality.
-        # for this we calculate the dot product of the feature vectors:
-        if (mem_vid is None):
-            # This uses batchwise contrast.
-            score = pairwise_scores(x=rep_sk, y=rep_vid, matching_fn=self.score_function)
-
-            targets = list(range(len(score)))
-
-            return rep_vid, rep_sk, score, torch.tensor(targets, dtype=torch.long, device=block_rgb.device)
-        else:
-            score_rgb_to_sk, score_sk_to_rgb = memory_contrast_scores(x=rep_vid, y=rep_sk,
-                                                                      x_mem=mem_vid,
-                                                                      y_mem=mem_sk,
-                                                                      x_cont=mem_vid_cont,
-                                                                      y_cont=mem_sk_cont,
-                                                                      matching_fn=self.score_function,
-                                                                      contrast_type=self.contrast_type)
-
-            # score = torch.cat((score_rgb_to_sk, score_sk_to_rgb), dim=0)
-
-            if mem_vid_cont.shape[0] > 0:
-                targets_rgb_to_sk = torch.tensor([0] * bs)
-                targets_sk_to_rgb = torch.tensor([0] * bs)
-            else:
-                targets_rgb_to_sk = torch.tensor(list(range(bs)))
-                targets_sk_to_rgb = torch.tensor(list(range(bs)))
-
-            targets_rgb_to_sk = torch.tensor(targets_rgb_to_sk, dtype=torch.long, device=block_rgb.device)
-            targets_sk_to_rgb = torch.tensor(targets_sk_to_rgb, dtype=torch.long, device=block_rgb.device)
-
-            return rep_vid, rep_sk, {"rgb_to_sk": score_sk_to_rgb, "sk_to_rgb": score_rgb_to_sk}, \
-                   {"rgb_to_sk": targets_rgb_to_sk, "sk_to_rgb": targets_sk_to_rgb}
+        return rep_vid, rep_sk
 
     @staticmethod
     def check_inputs(block_rgb, block_sk, mem_vid=None, mem_sk=None):
@@ -280,7 +244,7 @@ class SkeleContrastResnet(nn.Module):
 
         self.debug = debug
 
-        if "resnet" in vid_backbone:
+        if "r3d_" in vid_backbone:
             if vid_backbone == "r3d_18":
                 print('The video backbone is the 3D Resnet-18 network.')
                 self.vid_backbone = torchvision.models.video.r3d_18(pretrained=False, num_classes=hidden_width)
@@ -292,12 +256,12 @@ class SkeleContrastResnet(nn.Module):
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-            )
+        )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
 
         if "sk-motion" in sk_backbone:
             if "sk-motion-7" == self.sk_backbone_name:
@@ -307,7 +271,7 @@ class SkeleContrastResnet(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
 
         _initialize_weights(self.vid_fc2)
         _initialize_weights(self.vid_fc_rep)
@@ -323,6 +287,7 @@ class SkeleContrastResnet(nn.Module):
         block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
 
         features = self.sk_backbone(block_sk)
+        features = self.sk_fc_rep(features)
 
         is_zero = features == 0.0
 
@@ -346,8 +311,7 @@ class SkeleContrastResnet(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk,
-                mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None, no_scoring=False):
+    def forward(self, block_rgb, block_sk):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
@@ -365,41 +329,7 @@ class SkeleContrastResnet(nn.Module):
         rep_vid = rep_vid / torch.norm(rep_vid, dim=1, keepdim=True)
         rep_sk = rep_sk / torch.norm(rep_sk, dim=1, keepdim=True)
 
-        if no_scoring:
-            return rep_vid, rep_sk
-
-        # The score is now calculated according to the other modality.
-        # for this we calculate the dot product of the feature vectors:
-        if (mem_vid is None):
-            # This uses batchwise contrast.
-            score = SkeleContrastDPCResnet.pairwise_scores(x=rep_sk, y=rep_vid, matching_fn=self.score_function)
-
-            targets = list(range(len(score)))
-
-            return rep_vid, rep_sk, score, torch.tensor(targets, dtype=torch.long, device=block_rgb.device)
-        else:
-            score_rgb_to_sk, score_sk_to_rgb = SkeleContrastDPCResnet.memory_contrast_scores(x=rep_vid, y=rep_sk,
-                                                                                             x_mem=mem_vid,
-                                                                                             y_mem=mem_sk,
-                                                                                             x_cont=mem_vid_cont,
-                                                                                             y_cont=mem_sk_cont,
-                                                                                             matching_fn=self.score_function,
-                                                                                             contrast_type=self.contrast_type)
-
-            # score = torch.cat((score_rgb_to_sk, score_sk_to_rgb), dim=0)
-
-            if mem_vid_cont.shape[0] > 0:
-                targets_rgb_to_sk = torch.tensor([0] * bs)
-                targets_sk_to_rgb = torch.tensor([0] * bs)
-            else:
-                targets_rgb_to_sk = torch.tensor(list(range(bs)))
-                targets_sk_to_rgb = torch.tensor(list(range(bs)))
-
-            targets_rgb_to_sk = torch.tensor(targets_rgb_to_sk, dtype=torch.long, device=block_rgb.device)
-            targets_sk_to_rgb = torch.tensor(targets_sk_to_rgb, dtype=torch.long, device=block_rgb.device)
-
-            return rep_vid, rep_sk, {"rgb_to_sk": score_sk_to_rgb, "sk_to_rgb": score_rgb_to_sk}, \
-                   {"rgb_to_sk": targets_rgb_to_sk, "sk_to_rgb": targets_sk_to_rgb}
+        return rep_vid, rep_sk
 
     @staticmethod
     def check_inputs(block_rgb, block_sk, mem_vid=None, mem_sk=None):
@@ -418,12 +348,14 @@ class SkeleContrastDPCResnet(nn.Module):
     def __init__(self,
                  img_dim,
                  seq_len=30,
+                 downsampling=1,
                  vid_backbone='resnet18',
                  sk_backbone="sk-motion-7",
                  representation_size=512,
                  hidden_width=512,
                  score_function="dot",
                  contrast_type="cross",
+                 swav_prototype_count=0,
                  debug=False):
         super(SkeleContrastDPCResnet, self).__init__()
 
@@ -435,7 +367,7 @@ class SkeleContrastDPCResnet(nn.Module):
         self.score_function = score_function
 
         self.vid_dim = img_dim
-        self.seq_len = seq_len
+        self.seq_len = seq_len // downsampling
 
         self.vid_backbone_name = vid_backbone
         self.sk_backbone_name = sk_backbone
@@ -446,28 +378,32 @@ class SkeleContrastDPCResnet(nn.Module):
         self.contrast_type = contrast_type
         self.debug = debug
 
+        self.swav_prototype_count = swav_prototype_count
+
         self.last_duration = int(math.ceil(self.seq_len / 4))  # This is the sequence length after using the backbone
         self.last_size = int(math.ceil(self.vid_dim / 32))  # Final feature map has size (last_size, last_size)
 
         self.vid_backbone, self.param = select_resnet(vid_backbone, track_running_stats=False)
+
+        print(f'The video backbone is the 2D3D {vid_backbone} network.')
 
         self.param['hidden_size'] = self.param['feature_size']
 
         self.vid_fc1 = nn.Sequential(
             nn.ReLU(),
             nn.Linear(4096, self.hidden_width),
-            )
+        )
 
         self.vid_fc2 = nn.Sequential(
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-            )
+        )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
 
         if "sk-motion" in sk_backbone:
             if self.sk_backbone_name == "sk-motion-7":
@@ -479,7 +415,12 @@ class SkeleContrastDPCResnet(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-            )
+        )
+
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            print(
+                f"Using {self.swav_prototype_count} SWAV prototypes.")
+            self.prototypes = nn.Linear(self.representation_size, self.swav_prototype_count, bias=False)
 
         _initialize_weights(self.vid_fc1)
         _initialize_weights(self.vid_fc2)
@@ -488,6 +429,9 @@ class SkeleContrastDPCResnet(nn.Module):
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
 
+        nn.init.orthogonal_(self.prototypes.weight, 1)
+
+        print(f"This model has {sum(p.numel() for p in self.parameters() if p.requires_grad)} trainable parameters.")
         print("=================================")
 
     def _forward_sk(self, block_sk):
@@ -526,13 +470,12 @@ class SkeleContrastDPCResnet(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk, mem_vid=None, mem_sk=None, mem_vid_cont=None, mem_sk_cont=None,
-                no_scoring=False):
+    def forward(self, block_rgb, block_sk):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
         # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
 
         if self.debug:
-            SkeleContrastDPCResnet.check_inputs(block_rgb, block_sk, mem_sk, mem_vid)
+            SkeleContrastDPCResnet.check_inputs(block_rgb, block_sk)
 
         bs = block_rgb.shape[0]
 
@@ -545,40 +488,9 @@ class SkeleContrastDPCResnet(nn.Module):
         pred_rgb = pred_rgb / torch.norm(pred_rgb, dim=1, keepdim=True)
         pred_sk = pred_sk / torch.norm(pred_sk, dim=1, keepdim=True)
 
-        if no_scoring:
-            return pred_rgb, pred_sk
-
-        # The score is now calculated according to the other modality.
-        # For this we calculate the dot product of the feature vectors:
-        if (mem_vid is None):
-            # Batchwise contrast.
-            # Better outside, when on Multi GPU, since batch is larger then.
-            score = pairwise_scores(x=pred_sk, y=pred_rgb, matching_fn=self.score_function)
-
-            targets = list(range(len(score)))
-
-            return pred_rgb, pred_sk, score, torch.tensor(targets, dtype=torch.long, device=block_rgb.device)
-        else:
-            # Memory Contrast
-            score_rgb_to_sk, score_sk_to_rgb = memory_contrast_scores(x=pred_rgb, y=pred_sk,
-                                                                      x_mem=mem_vid, y_mem=mem_sk,
-                                                                      x_cont=mem_vid_cont,
-                                                                      y_cont=mem_sk_cont,
-                                                                      matching_fn=self.score_function,
-                                                                      contrast_type=self.contrast_type)
-
-            if mem_vid_cont.shape[0] > 0:
-                targets_rgb_to_sk = torch.tensor([0] * bs)
-                targets_sk_to_rgb = torch.tensor([0] * bs)
-            else:
-                targets_rgb_to_sk = torch.tensor(list(range(bs)))
-                targets_sk_to_rgb = torch.tensor(list(range(bs)))
-
-            targets_rgb_to_sk = torch.tensor(targets_rgb_to_sk, dtype=torch.long, device=block_rgb.device)
-            targets_sk_to_rgb = torch.tensor(targets_sk_to_rgb, dtype=torch.long, device=block_rgb.device)
-
-            return pred_rgb, pred_sk, {"rgb_to_sk": score_sk_to_rgb, "sk_to_rgb": score_rgb_to_sk}, \
-                   {"rgb_to_sk": targets_rgb_to_sk, "sk_to_rgb": targets_sk_to_rgb},
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            return pred_rgb, pred_sk, self.prototypes(pred_rgb), self.prototypes(pred_sk)
+        return pred_rgb, pred_sk
 
     @staticmethod
     def check_inputs(block_rgb, block_sk, mem_vid=None, mem_sk=None):
@@ -632,14 +544,14 @@ def memory_contrast_scores(x: torch.Tensor,
             # of the other modality. The first vectors are the ground truth (other modality).
             if contrast_type == "cross":
                 scores_x_i = pairwise_scores(x[i].view((1, -1)), y_calc[i],
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
                 scores_y_i = pairwise_scores(y[i].view((1, -1)), x_calc[i],
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
             elif contrast_type == "self":
                 scores_x_i = pairwise_scores(x[i].reshape((1, -1)), x_mem,
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
                 scores_y_i = pairwise_scores(y[i].reshape((1, -1)), y_mem,
-                                                                    matching_fn=matching_fn)
+                                             matching_fn=matching_fn)
             else:
                 raise ValueError
 
