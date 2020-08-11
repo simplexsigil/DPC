@@ -308,7 +308,7 @@ def resnet200_2d3d_full(**kwargs):
                    [3, 24, 36, 3], **kwargs)
     return model
 
-def neq_load_customized(model, pretrained_dict, ignore_layer=""):
+def neq_load_customized(model, pretrained_dict, ignore_layer=None):
     ''' load pre-trained model in a not-equal way,
     when new model has been partially modified '''
     model_dict = model.state_dict()
@@ -316,7 +316,7 @@ def neq_load_customized(model, pretrained_dict, ignore_layer=""):
     print('\n=======Check Weights Loading======')
     print('Weights not used from pretrained file:')
     for k, v in pretrained_dict.items():
-        if k in model_dict and not re.match(ignore_layer, k):
+        if k in model_dict and not (ignore_layer is not None and re.match(ignore_layer, k)):
             tmp[k] = v
         else:
             print(k)

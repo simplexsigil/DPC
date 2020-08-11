@@ -429,6 +429,8 @@ class SkeleContrastDPCResnet(nn.Module):
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
 
+        nn.init.orthogonal_(self.prototypes.weight, 1)
+
         print(f"This model has {sum(p.numel() for p in self.parameters() if p.requires_grad)} trainable parameters.")
         print("=================================")
 

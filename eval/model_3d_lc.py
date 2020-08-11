@@ -85,7 +85,12 @@ class Resnet18Classifier(nn.Module):
 
 
 class R2plus1DClassifier(nn.Module):
-    def __init__(self, sample_size, seq_len, backbone='r2+1d18', dropout=0.5, num_class=101, representation_size=512,
+    def __init__(self, sample_size,
+                 seq_len,
+                 backbone='r2+1d18',
+                 dropout=0.5,
+                 num_class=101,
+                 representation_size=512,
                  hidden_fc_width=512):
         super(R2plus1DClassifier, self).__init__()
 
@@ -95,22 +100,25 @@ class R2plus1DClassifier(nn.Module):
         self.seq_len = seq_len
         self.num_class = num_class
         self.representation_size = representation_size
-        self.hidden_fc_width = hidden_fc_width
+        self.hidden_width = hidden_fc_width
 
         if "r2+1d" in backbone:
             if backbone == "r2+1d18":
-                self.backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=hidden_fc_width)
+                self.vid_backbone = torchvision.models.video.r2plus1d_18(pretrained=False, num_classes=hidden_fc_width)
             else:
                 raise ValueError
 
-        self.projection_head = nn.Sequential(
-            nn.Dropout(dropout),
+        # The first linear layer is part of the R(2+1)D architecture
+        self.vid_fc2 = nn.Sequential(
+            nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
-            nn.Linear(self.hidden_fc_width, self.hidden_fc_width),
-            nn.Dropout(dropout),
+            nn.Linear(self.hidden_width, self.hidden_width),
+        )
+
+        self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
-            nn.Linear(self.hidden_fc_width, self.representation_size)
-            )
+            nn.Linear(self.hidden_width, self.representation_size),
+        )
 
         self.final_fc = nn.Sequential(
             nn.Dropout(dropout),
@@ -118,15 +126,18 @@ class R2plus1DClassifier(nn.Module):
             nn.Linear(self.representation_size, self.num_class)
             )
 
-        R2plus1DClassifier._initialize_weights(self.projection_head)
+        R2plus1DClassifier._initialize_weights(self.vid_fc2)
+        R2plus1DClassifier._initialize_weights(self.vid_fc_rep)
         R2plus1DClassifier._initialize_weights(self.final_fc)
 
     def forward(self, block):
         (B, C, SL, H, W) = block.shape  # block: [B, C, SL, W, H] Batch, Channels, Seq Len, Width Height
 
-        feature = self.backbone(block)
+        feature = self.vid_backbone(block)
         del block
-        feature = self.projection_head(feature)
+        feature = self.vid_fc2(feature)
+
+        feature = self.vid_fc_rep(feature)
 
         output = self.final_fc(feature).view(B, self.num_class)
 
@@ -148,4 +159,4 @@ class R2plus1DClassifier(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def load_weights_state_dict(self, state_dict, model=None):
-        neq_load_customized((self if model is None else model), state_dict, ignore_layer=".*module.final_bn.*")
+        neq_load_customized((self if model is None else model), state_dict)

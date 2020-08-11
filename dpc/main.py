@@ -63,14 +63,16 @@ parser.add_argument('--training_type', type=str, default="batch_contrast",
                     choices=["batch_contrast", "memory_contrast", "swav"], help='Type of training.')
 
 # SWAV specific params
-parser.add_argument('--swav_prototypes', type=int, default=3000, help='Use SWAV training.')
+parser.add_argument('--swav_prototypes', type=int, default=30, help='Use SWAV training.')
 parser.add_argument("--sinkhorn_knopp_epsilon", default=0.05, type=float,
                     help="regularization parameter for Sinkhorn-Knopp algorithm")
-parser.add_argument("--sinkhorn_iterations", default=3, type=int,
+parser.add_argument("--sinkhorn_iterations", default=6, type=int,
                     help="number of iterations in Sinkhorn-Knopp algorithm")
-parser.add_argument("--freeze_prototypes_niters", default=313, type=int,
+parser.add_argument("--freeze_prototypes_niters", default=400, type=int,
                     help="freeze the prototypes during this many iterations from the start")
 parser.add_argument("--swav_warmup_epochs", default=10, type=int, help="number of warmup epochs")
+parser.add_argument("--swav_epsilon", default=0.05, type=int, help="number of warmup epochs")
+parser.add_argument("--swav_temperature", default=0.1, type=int, help="number of warmup epochs")
 
 # Memory Contrast specific params
 parser.add_argument('--memory_contrast', default=None, type=int,
@@ -184,7 +186,10 @@ def main():
     else:
         # Normal case, no resuming, not pretraining.
         args.best_train_loss = None
-        args.best_train_acc = None
+        if args.training_type == "swav":
+            args.best_projection_sim = None
+        else:
+            args.best_train_acc = None
         args.best_val_loss = None
         args.best_val_acc = None
 
