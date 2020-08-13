@@ -1,3 +1,4 @@
+import os
 import time
 
 import torch
@@ -6,7 +7,8 @@ import loss_functions
 from utils import AverageMeter, calc_topk_accuracy, write_out_checkpoint, write_out_images
 
 
-def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val, args, cuda_device):
+def training_loop(model, optimizer, lr_schedule, criterion, train_loader, val_loader, writer_train, writer_val, args,
+                  cuda_device):
     iteration = args.start_iteration
     best_val_acc = args.best_val_acc
     best_val_loss = args.best_val_loss
@@ -14,10 +16,25 @@ def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_
     best_projection_sim = args.best_projection_sim
     best_train_loss = args.best_train_loss
 
+    # build the queue
+    queue = None
+    queue_path = os.path.join(args.model_path, "queue.pth")
+    if os.path.isfile(queue_path):
+        queue = torch.load(queue_path)["queue"]
+    # the queue needs to be divisible by the batch size
+    args.queue_length -= args.queue_length % args.batch_size
+
     # Main loop
     for epoch in range(args.start_epoch, args.epochs):
-        iteration, train_loss, projection_sim = train_skvid_swav(train_loader, model, optimizer, criterion,
-                                                                 epoch, iteration, args, writer_train, cuda_device)
+        # optionally starts a queue
+        if args.queue_length > 0 and epoch >= args.epoch_queue_starts and queue is None:
+            queue = {}
+
+            queue["vid"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
+            queue["sk"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
+
+        iteration, train_loss, projection_sim = train_skvid_swav(train_loader, model, optimizer, lr_schedule, epoch,
+                                                                 iteration, args, writer_train, cuda_device, queue)
 
         val_loss, val_acc = validate(val_loader, model, criterion, cuda_device,
                                      epoch, args, writer_val)
@@ -39,8 +56,8 @@ def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
 
-def train_skvid_swav(data_loader, model, optimizer, criterion, epoch, iteration, args, writer_train,
-                     cuda_device):
+def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteration, args, writer_train,
+                     cuda_device, queue=None):
     tr_stats = {"time_data_loading":  AverageMeter(locality=args.print_freq),
                 "time_cuda_transfer": AverageMeter(locality=args.print_freq),
                 "time_forward":       AverageMeter(locality=args.print_freq),
@@ -59,6 +76,8 @@ def train_skvid_swav(data_loader, model, optimizer, criterion, epoch, iteration,
                 "cv_proj_rnd_sim_s":  AverageMeter(locality=args.print_freq),
 
                 "total_loss":         AverageMeter(locality=args.print_freq),
+
+                "learning_rate":      AverageMeter(locality=args.print_freq),
                 }
 
     model.train()
@@ -73,6 +92,15 @@ def train_skvid_swav(data_loader, model, optimizer, criterion, epoch, iteration,
         batch_size = vid_seq.size(0)
 
         tr_stats["time_data_loading"].update(time.perf_counter() - dl_time)
+
+        if lr_schedule is not None:
+            # update learning rate
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = lr_schedule[iteration]
+
+            tr_stats["learning_rate"].update(lr_schedule[iteration])
+        else:
+            tr_stats["learning_rate"].update(args.lr)
 
         # Visualize images for tensorboard.
         if iteration == 0:
@@ -98,6 +126,7 @@ def train_skvid_swav(data_loader, model, optimizer, criterion, epoch, iteration,
             model.module.prototypes.weight.copy_(w)
 
         repr_vid, repr_sk, repr_vid_proj, repr_sk_proj = model(vid_seq, sk_seq)
+        repr_vid, repr_sk = repr_vid.detach(), repr_sk.detach()
 
         e_forw_time = time.perf_counter()
         tr_stats["time_forward"].update(e_forw_time - s_forw_time)
@@ -106,24 +135,50 @@ def train_skvid_swav(data_loader, model, optimizer, criterion, epoch, iteration,
         s_score_time = time.perf_counter()
 
         # ============ swav loss ... ============
+        # Adapted from https://github.com/facebookresearch/swav/blob/master/main_swav.py
         loss = 0
-        with torch.no_grad():
-            # get assignments
-            q_vid = torch.exp(repr_vid_proj / args.swav_epsilon).t()
-            q_vid = sinkhorn(q_vid, args.sinkhorn_iterations)
-            q_vid = q_vid.t()
 
-            q_sk = torch.exp(repr_sk_proj / args.swav_epsilon).t()
+        all_vid_proj = repr_vid_proj
+        all_sk_proj = repr_sk_proj
+
+        with torch.no_grad():
+            # time to use the queue
+            if queue is not None:
+                queue_vid = queue["vid"]
+                queue_sk = queue["sk"]
+
+                non_zero_row = torch.any(queue_vid != 0, dim=1)
+
+                if torch.any(non_zero_row):
+                    queue_vid_proj = torch.mm(queue_vid[non_zero_row], model.module.prototypes.weight.t())
+                    queue_sk_proj = torch.mm(queue_sk[non_zero_row], model.module.prototypes.weight.t())
+
+                    all_vid_proj = torch.cat((queue_vid_proj, repr_vid_proj))
+                    all_sk_proj = torch.cat((queue_sk_proj, repr_sk_proj))
+
+                # fill the queue
+                queue_vid[batch_size:] = queue_vid[:-batch_size].clone()
+                queue_vid[:batch_size] = repr_vid
+
+                queue_sk[batch_size:] = queue_sk[:-batch_size].clone()
+                queue_sk[:batch_size] = repr_sk
+
+            # get assignments
+            q_vid = torch.exp(all_vid_proj / args.swav_epsilon).t()
+            q_vid = sinkhorn(q_vid, args.sinkhorn_iterations)
+            q_vid = q_vid.t()[-batch_size:]
+
+            q_sk = torch.exp(all_sk_proj / args.swav_epsilon).t()
             q_sk = sinkhorn(q_sk, args.sinkhorn_iterations)
-            q_sk = q_sk.t()
+            q_sk = q_sk.t()[-batch_size:]
 
         p_vid = torch.nn.functional.softmax(repr_vid_proj / args.swav_temperature, dim=1)
         p_sk = torch.nn.functional.softmax(repr_sk_proj / args.swav_temperature, dim=1)
 
         loss = torch.zeros(1, device=repr_vid_proj.device)
 
-        loss -= torch.mean(torch.sum(q_vid * torch.log(p_sk), dim=1))
-        loss -= torch.mean(torch.sum(q_sk * torch.log(p_vid), dim=1))
+        loss += torch.mean(torch.sum(-q_vid * torch.log(p_sk) - (1 - q_vid) * torch.log(1 - p_sk), dim=1))  #
+        loss += torch.mean(torch.sum(-q_sk * torch.log(p_vid) - (1 - q_sk) * torch.log(1 - p_vid), dim=1))  #
 
         loss /= 2
 
@@ -260,6 +315,8 @@ def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
                    }
 
     writer_train.add_scalars('it/Batch-Wise_Timings', timing_dict, iteration)
+
+    writer_train.add_scalars('it/Learning Rate', {"Learning Rate": tr_stats["learning_rate"].local_avg}, iteration)
 
 
 def print_tr_stats_loc_avg(stats: dict, epoch, idx, batch_count, duration):

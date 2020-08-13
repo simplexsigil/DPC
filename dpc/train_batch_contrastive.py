@@ -272,7 +272,7 @@ def validate(data_loader, model, criterion, cuda_device, epoch, args, writer_val
 
             batch_size = vid_seq.size(0)
 
-            repr_vid, repr_sk = model(vid_seq, sk_seq, None, None, None, None, no_scoring=True)
+            repr_vid, repr_sk = model(vid_seq, sk_seq)
 
             val_stats["time_forward"].update(time.perf_counter() - start_time)
 

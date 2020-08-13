@@ -1,9 +1,15 @@
 import argparse
+import sys
 from datetime import datetime
+
+try:
+    from apex.parallel.LARC import LARC
+
+except ImportError as e:
+    raise e  # module doesn't exist, deal with it.
 
 from tensorboardX import SummaryWriter
 
-import sys
 sys.path.insert(0, '../utils')
 sys.path.insert(0, '../backbone')
 sys.path.insert(0, '../datasets')
@@ -29,7 +35,7 @@ parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 
-parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=15, type=int)
 
 parser.add_argument('--dataset', default='nturgbd', type=str)
@@ -52,7 +58,7 @@ parser.add_argument('--temperature', default=0.01, type=float, help='Termperatur
 parser.add_argument('--representation_size', default=128, type=int)
 parser.add_argument('--hidden_size', default=512, type=int)
 
-
+parser.add_argument('--optim', default="Adam", type=str, choices=["Adam", "SGD"], help='learning rate')
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
 parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
@@ -69,16 +75,27 @@ parser.add_argument('--training_type', type=str, default="batch_contrast",
                     choices=["batch_contrast", "memory_contrast", "swav"], help='Type of training.')
 
 # SWAV specific params
-parser.add_argument('--swav_prototypes', type=int, default=30, help='Use SWAV training.')
+parser.add_argument('--swav_prototypes', type=int, default=400, help='Use SWAV training.')
 parser.add_argument("--sinkhorn_knopp_epsilon", default=0.05, type=float,
                     help="regularization parameter for Sinkhorn-Knopp algorithm")
 parser.add_argument("--sinkhorn_iterations", default=6, type=int,
                     help="number of iterations in Sinkhorn-Knopp algorithm")
 parser.add_argument("--freeze_prototypes_niters", default=400, type=int,
                     help="freeze the prototypes during this many iterations from the start")
-parser.add_argument("--swav_warmup_epochs", default=10, type=int, help="number of warmup epochs")
 parser.add_argument("--swav_epsilon", default=0.05, type=int, help="number of warmup epochs")
-parser.add_argument("--swav_temperature", default=0.1, type=int, help="number of warmup epochs")
+parser.add_argument("--swav_temperature", default=0.1, type=float, help="number of warmup epochs")
+parser.add_argument("--queue_length", type=int, default=300,
+                    help="length of the queue (0 for no queue)")
+parser.add_argument("--epoch_queue_starts", type=int, default=8,
+                    help="from this epoch, we start using a queue")
+
+parser.add_argument('--use_larc', action='store_true', default=False, help='Use LARC optimizer wrapper.')
+parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
+parser.add_argument('--use_lr_schdule', action='store_true', default=False, help='Use LR Schedule.')
+
+parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
+parser.add_argument("--start_warmup", default=0, type=float,
+                    help="initial warmup learning rate")
 
 # Memory Contrast specific params
 parser.add_argument('--memory_contrast', default=None, type=int,
@@ -174,8 +191,20 @@ def main():
 
     check_and_prepare_parameters(model, args.training_focus)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
-    # optimizer = torch.optim.SGD(model.parameters(), lr=args.lr)
+    if args.optim == "Adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, amsgrad=False)
+    elif args.optim == "SGD":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=args.lr,
+            momentum=0.9,
+            weight_decay=args.wd,
+            )
+    else:
+        raise ValueError
+
+    if args.use_larc:
+        optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
 
     # Prepare Loss
     # Contrastive loss can be implemented with CrossEntropyLoss with vector similarity.
@@ -191,14 +220,19 @@ def main():
         # The difference to resuming: We do not expect the same model.
         # In this case, only some of the pretrained weights are used.
         model = prepare_on_pretrain(model, args.pretrain, args)
-    else:
-        # Normal case, no resuming, not pretraining.
+
+    # Normal case, no resuming, not pretraining.
+    if not hasattr(args, 'best_train_loss'):
         args.best_train_loss = None
-        if args.training_type == "swav":
+    if args.training_type == "swav":
+        if not hasattr(args, 'best_projection_sim'):
             args.best_projection_sim = None
-        else:
+    else:
+        if not hasattr(args, 'best_train_acc'):
             args.best_train_acc = None
+    if not hasattr(args, 'best_val_loss'):
         args.best_val_loss = None
+    if not hasattr(args, 'best_val_acc'):
         args.best_val_acc = None
 
     transform = prepare_augmentations(augmentation_settings, args)
@@ -210,8 +244,20 @@ def main():
     train_loader, train_len = get_data(transform, 'train', args, augmentation_settings)
     val_loader, val_len = get_data(transform, 'val', args, augmentation_settings)
 
+    if args.use_lr_schdule:
+        warmup_lr_schedule = np.linspace(args.start_warmup, args.base_lr, len(train_loader) * args.warmup_epochs)
+        iters = np.arange(len(train_loader) * (args.epochs - args.warmup_epochs))
+        cosine_lr_schedule = np.array([args.final_lr +
+                                       0.5 * (args.base_lr - args.final_lr) *
+                                       (1 + math.cos(math.pi * t / (len(train_loader) *
+                                                                    (args.epochs - args.warmup_epochs))))
+                                       for t in iters])
+        lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
+    else:
+        lr_schedule = None
+
     if args.training_type == "swav":
-        tsv.training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val,
+        tsv.training_loop(model, optimizer, lr_schedule, criterion, train_loader, val_loader, writer_train, writer_val,
                           args, cuda_device)
 
     elif args.training_type == "memory_contrast":
@@ -262,16 +308,16 @@ def select_and_prepare_model(args):
                                   representation_size=args.representation_size,
                                   hidden_width=args.hidden_size,
                                   debug=False,
-                                  random_seed=42
-                                  )
+                                  random_seed=42,
+                                  swav_prototype_count=args.swav_prototypes if args.training_type == "swav" else 0)
     elif args.model == "sk-cont-resnet":
         model = SkeleContrastResnet(vid_backbone=args.vid_backbone,
                                     sk_backbone="sk-motion-7",
                                     representation_size=args.representation_size,
                                     hidden_width=args.hidden_size,
                                     debug=False,
-                                    random_seed=42
-                                    )
+                                    random_seed=42,
+                                    swav_prototype_count=args.swav_prototypes if args.training_type == "swav" else 0)
     else:
         raise ValueError('wrong model!')
 

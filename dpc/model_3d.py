@@ -106,6 +106,7 @@ class SkeleContrastR21D(nn.Module):
                  sk_backbone="sk-motion-7",
                  representation_size=512,
                  hidden_width=512,
+                 swav_prototype_count=0,
                  debug=False,
                  random_seed=42):
         super(SkeleContrastR21D, self).__init__()
@@ -120,6 +121,8 @@ class SkeleContrastR21D(nn.Module):
 
         self.representation_size = representation_size
         self.hidden_width = hidden_width
+
+        self.swav_prototype_count = swav_prototype_count
 
         self.debug = debug
 
@@ -152,11 +155,19 @@ class SkeleContrastR21D(nn.Module):
             nn.Linear(self.hidden_width, self.representation_size),
         )
 
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            print(
+                f"Using {self.swav_prototype_count} SWAV prototypes.")
+            self.prototypes = nn.Linear(self.representation_size, self.swav_prototype_count, bias=False)
+
         _initialize_weights(self.vid_fc2)
         _initialize_weights(self.vid_fc_rep)
 
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
+
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            nn.init.orthogonal_(self.prototypes.weight, 1)
 
         print("=================================")
 
@@ -206,6 +217,9 @@ class SkeleContrastR21D(nn.Module):
         rep_vid = rep_vid / torch.norm(rep_vid, dim=1, keepdim=True)
         rep_sk = rep_sk / torch.norm(rep_sk, dim=1, keepdim=True)
 
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            return rep_vid, rep_sk, self.prototypes(rep_vid), self.prototypes(rep_sk)
+
         return rep_vid, rep_sk
 
     @staticmethod
@@ -227,6 +241,7 @@ class SkeleContrastResnet(nn.Module):
                  sk_backbone="sk-motion-7",
                  representation_size=512,
                  hidden_width=512,
+                 swav_prototype_count=0,
                  debug=False,
                  random_seed=42):
         super(SkeleContrastResnet, self).__init__()
@@ -241,6 +256,8 @@ class SkeleContrastResnet(nn.Module):
 
         self.representation_size = representation_size
         self.hidden_width = hidden_width
+
+        self.swav_prototype_count = swav_prototype_count
 
         self.debug = debug
 
@@ -273,11 +290,19 @@ class SkeleContrastResnet(nn.Module):
             nn.Linear(self.hidden_width, self.representation_size),
         )
 
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            print(
+                f"Using {self.swav_prototype_count} SWAV prototypes.")
+            self.prototypes = nn.Linear(self.representation_size, self.swav_prototype_count, bias=False)
+
         _initialize_weights(self.vid_fc2)
         _initialize_weights(self.vid_fc_rep)
 
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
+
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            nn.init.orthogonal_(self.prototypes.weight, 1)
 
         print("=================================")
 
@@ -328,6 +353,9 @@ class SkeleContrastResnet(nn.Module):
 
         rep_vid = rep_vid / torch.norm(rep_vid, dim=1, keepdim=True)
         rep_sk = rep_sk / torch.norm(rep_sk, dim=1, keepdim=True)
+
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            return rep_vid, rep_sk, self.prototypes(rep_vid), self.prototypes(rep_sk)
 
         return rep_vid, rep_sk
 
@@ -429,7 +457,8 @@ class SkeleContrastDPCResnet(nn.Module):
         _initialize_weights(self.sk_backbone)
         _initialize_weights(self.sk_fc_rep)
 
-        nn.init.orthogonal_(self.prototypes.weight, 1)
+        if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
+            nn.init.orthogonal_(self.prototypes.weight, 1)
 
         print(f"This model has {sum(p.numel() for p in self.parameters() if p.requires_grad)} trainable parameters.")
         print("=================================")
