@@ -4,9 +4,10 @@ from datetime import datetime
 
 try:
     from apex.parallel.LARC import LARC
-
+    apex_available = True
 except ImportError as e:
-    raise e  # module doesn't exist, deal with it.
+    apex_available = False
+    pass  # module doesn't exist, deal with it.
 
 from tensorboardX import SummaryWriter
 
@@ -204,6 +205,8 @@ def main():
         raise ValueError
 
     if args.use_larc:
+        if not apex_available:
+            raise ValueError("Can not use LARC optimizer because the needed apex package is not available.")
         optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
 
     # Prepare Loss
