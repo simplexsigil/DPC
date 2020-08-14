@@ -30,7 +30,7 @@ def get_debug_hook_grad(name):
             torch.any(grad == 0.0),
             torch.min(grad),
             torch.max(grad)
-        ))
+            ))
 
         return grad
 
@@ -138,12 +138,12 @@ class SkeleContrastR21D(nn.Module):
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-        )
+            )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if "sk-motion" in sk_backbone:
             if "sk-motion-7" == self.sk_backbone_name:
@@ -153,7 +153,7 @@ class SkeleContrastR21D(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
             print(
@@ -273,12 +273,12 @@ class SkeleContrastResnet(nn.Module):
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-        )
+            )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if "sk-motion" in sk_backbone:
             if "sk-motion-7" == self.sk_backbone_name:
@@ -288,7 +288,7 @@ class SkeleContrastResnet(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
             print(
@@ -420,18 +420,18 @@ class SkeleContrastDPCResnet(nn.Module):
         self.vid_fc1 = nn.Sequential(
             nn.ReLU(),
             nn.Linear(4096, self.hidden_width),
-        )
+            )
 
         self.vid_fc2 = nn.Sequential(
             nn.BatchNorm1d(self.hidden_width),
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.hidden_width),
-        )
+            )
 
         self.vid_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if "sk-motion" in sk_backbone:
             if self.sk_backbone_name == "sk-motion-7":
@@ -443,7 +443,7 @@ class SkeleContrastDPCResnet(nn.Module):
         self.sk_fc_rep = nn.Sequential(
             nn.ReLU(),
             nn.Linear(self.hidden_width, self.representation_size),
-        )
+            )
 
         if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
             print(
@@ -514,11 +514,14 @@ class SkeleContrastDPCResnet(nn.Module):
         pred_rgb = pred_rgb.contiguous()
         pred_sk = pred_sk.contiguous()
 
-        pred_rgb = pred_rgb / torch.norm(pred_rgb, dim=1, keepdim=True)
-        pred_sk = pred_sk / torch.norm(pred_sk, dim=1, keepdim=True)
+        pred_rgb = torch.nn.functional.normalize(pred_rgb)
+        pred_sk = torch.nn.functional.normalize(pred_sk)
 
         if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
-            return pred_rgb, pred_sk, self.prototypes(pred_rgb), self.prototypes(pred_sk)
+            pred_rgb_proj = self.prototypes(pred_rgb)  # torch.nn.functional.normalize(self.prototypes(pred_rgb))
+            pred_sk_proj = self.prototypes(pred_sk)  # torch.nn.functional.normalize(self.prototypes(pred_sk))
+
+            return pred_rgb, pred_sk, pred_rgb_proj, pred_sk_proj
         return pred_rgb, pred_sk
 
     @staticmethod

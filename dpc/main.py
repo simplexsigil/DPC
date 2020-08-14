@@ -4,6 +4,7 @@ from datetime import datetime
 
 try:
     from apex.parallel.LARC import LARC
+
     apex_available = True
 except ImportError as e:
     apex_available = False
@@ -36,10 +37,10 @@ parser.add_argument('--gpu', default=[0], type=int, nargs='+')
 parser.add_argument('--loader_workers', default=16, type=int,
                     help='Number of data loader workers to pre load batch data. Main thread used if 0.')
 
-parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
+parser.add_argument('--epochs', default=1000, type=int, help='number of total epochs to run')
 parser.add_argument('--batch_size', default=15, type=int)
 
-parser.add_argument('--dataset', default='nturgbd', type=str)
+parser.add_argument('--dataset', default='nturgbd', choices=["ucf101", "kinetics400", "nturgbd"], type=str)
 parser.add_argument('--split-mode', default="perc", type=str)
 parser.add_argument('--split-test-frac', default=0.1, type=float)
 
@@ -59,44 +60,46 @@ parser.add_argument('--temperature', default=0.01, type=float, help='Termperatur
 parser.add_argument('--representation_size', default=128, type=int)
 parser.add_argument('--hidden_size', default=512, type=int)
 
+parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
 parser.add_argument('--optim', default="Adam", type=str, choices=["Adam", "SGD"], help='learning rate')
 parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
 parser.add_argument('--wd', default=1e-5, type=float, help='weight decay')
-parser.add_argument('--training_focus', default='all', type=str, help='Defines which parameters are trained.')
+parser.add_argument('--use_lr_schedule', action='store_true', default=False, help='Use LR Schedule.')
+parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
+parser.add_argument('--use_larc', action='store_true', default=False, help='Use LARC optimizer wrapper.')
+
+parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
+parser.add_argument("--start_warmup", default=0, type=float,
+                    help="initial warmup learning rate")
 
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 
 parser.add_argument('--save_best_val_loss', type=bool, default=False, help='Save model with best Val Loss.')
 parser.add_argument('--save_best_val_acc', type=bool, default=True, help='Save model with best Val Accuracy.')
-parser.add_argument('--save_best_train_loss', type=bool, default=False, help='Save model with best Train Loss.')
-parser.add_argument('--save_best_train_acc', type=bool, default=True, help='Save model with best Train Accuracy.')
+parser.add_argument('--save_best_train_loss', type=bool, default=True, help='Save model with best Train Loss.')
+parser.add_argument('--save_best_train_acc', type=bool, default=False, help='Save model with best Train Accuracy.')
 
 parser.add_argument('--training_type', type=str, default="batch_contrast",
                     choices=["batch_contrast", "memory_contrast", "swav"], help='Type of training.')
 
 # SWAV specific params
-parser.add_argument('--swav_prototypes', type=int, default=400, help='Use SWAV training.')
-parser.add_argument("--sinkhorn_knopp_epsilon", default=0.05, type=float,
-                    help="regularization parameter for Sinkhorn-Knopp algorithm")
+parser.add_argument('--swav_prototypes', type=int, default=3000, help='Use SWAV training.')
+parser.add_argument("--iters_freeze_prototypes", default=1000, type=int,
+                    help="freeze the prototypes during this many iterations from the start")
+
 parser.add_argument("--sinkhorn_iterations", default=6, type=int,
                     help="number of iterations in Sinkhorn-Knopp algorithm")
-parser.add_argument("--freeze_prototypes_niters", default=400, type=int,
-                    help="freeze the prototypes during this many iterations from the start")
-parser.add_argument("--swav_epsilon", default=0.05, type=int, help="number of warmup epochs")
+parser.add_argument("--sinkhorn_knopp_epsilon", default=0.01, type=float,
+                    help="regularization parameter for Sinkhorn-Knopp algorithm")
+
 parser.add_argument("--swav_temperature", default=0.1, type=float, help="number of warmup epochs")
-parser.add_argument("--queue_length", type=int, default=300,
+
+parser.add_argument("--queue_length", type=int, default=100,
                     help="length of the queue (0 for no queue)")
-parser.add_argument("--epoch_queue_starts", type=int, default=8,
-                    help="from this epoch, we start using a queue")
+parser.add_argument("--iters_queue_starts", type=int, default=2000,
+                    help="from this iteration, we start using a queue")
 
-parser.add_argument('--use_larc', action='store_true', default=False, help='Use LARC optimizer wrapper.')
-parser.add_argument("--final_lr", type=float, default=0, help="final learning rate")
-parser.add_argument('--use_lr_schdule', action='store_true', default=False, help='Use LR Schedule.')
-
-parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
-parser.add_argument("--start_warmup", default=0, type=float,
-                    help="initial warmup learning rate")
 
 # Memory Contrast specific params
 parser.add_argument('--memory_contrast', default=None, type=int,
@@ -131,6 +134,15 @@ parser.add_argument('--kinetics-video-info',
 parser.add_argument('--kinetics-skele-motion',
                     default=os.path.expanduser("~/datasets/kinetics/kinetics400-skeleton/skele-motion"), type=str)
 
+parser.add_argument('--aug_rotation_range', default=[20.], type=float, nargs='+')
+
+parser.add_argument('--aug_hue_range', default=[0.4], type=float, nargs='+')
+parser.add_argument('--aug_saturation_range', default=[0.4], type=float, nargs='+')
+parser.add_argument('--aug_value_range', default=[0.4], type=float, nargs='+')
+
+parser.add_argument('--aug_crop_min_area', default=0.10, type=float)
+parser.add_argument('--aug_crop_max_area', default=1., type=float)
+
 
 def argument_checks(args):
     """
@@ -152,27 +164,24 @@ def argument_checks(args):
 
 
 def main():
-    # TODO: Set with arguments.
-    augmentation_settings = {
-        "rot_range":      (-3, 3),
-        "hue_range":      (-30, 30),
-        "sat_range":      (0.8, 1.2),
-        "val_range":      (0.8, 1.2),
-        "hue_prob":       1.,
-        "crop_arr_range": (0.9, 1.)
-        }
-
-    best_acc = 0
-    iteration = 0
-
     torch.manual_seed(0)
     np.random.seed(0)
 
     args = parser.parse_args()
-    print(args)
-    print(augmentation_settings)
 
     args = argument_checks(args)
+
+    augmentation_settings = {
+        "rot_range":      (-abs(min(args.aug_rotation_range)), abs(max(args.aug_rotation_range))),
+        "hue_range":      (1. - abs(min(args.aug_hue_range)), 1. + abs(max(args.aug_hue_range))),
+        "sat_range":      (1. - abs(min(args.aug_saturation_range)), 1. + abs(max(args.aug_saturation_range))),
+        "val_range":      (1. - abs(min(args.aug_value_range)), 1. + abs(max(args.aug_value_range))),
+        "hue_prob":       1.,
+        "crop_arr_range": (args.aug_crop_min_area, args.aug_crop_max_area)
+        }
+
+    print(args)
+    print(augmentation_settings)
 
     # setup tools
     args.img_path, args.model_path, exp_path = set_path(args)
@@ -247,11 +256,11 @@ def main():
     train_loader, train_len = get_data(transform, 'train', args, augmentation_settings)
     val_loader, val_len = get_data(transform, 'val', args, augmentation_settings)
 
-    if args.use_lr_schdule:
-        warmup_lr_schedule = np.linspace(args.start_warmup, args.base_lr, len(train_loader) * args.warmup_epochs)
+    if args.use_lr_schedule:
+        warmup_lr_schedule = np.linspace(args.start_warmup, args.lr, len(train_loader) * args.warmup_epochs)
         iters = np.arange(len(train_loader) * (args.epochs - args.warmup_epochs))
         cosine_lr_schedule = np.array([args.final_lr +
-                                       0.5 * (args.base_lr - args.final_lr) *
+                                       0.5 * (args.lr - args.final_lr) *
                                        (1 + math.cos(math.pi * t / (len(train_loader) *
                                                                     (args.epochs - args.warmup_epochs))))
                                        for t in iters])

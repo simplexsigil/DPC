@@ -26,13 +26,6 @@ def training_loop(model, optimizer, lr_schedule, criterion, train_loader, val_lo
 
     # Main loop
     for epoch in range(args.start_epoch, args.epochs):
-        # optionally starts a queue
-        if args.queue_length > 0 and epoch >= args.epoch_queue_starts and queue is None:
-            queue = {}
-
-            queue["vid"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
-            queue["sk"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
-
         iteration, train_loss, projection_sim = train_skvid_swav(train_loader, model, optimizer, lr_schedule, epoch,
                                                                  iteration, args, writer_train, cuda_device, queue)
 
@@ -81,6 +74,8 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
                 }
 
     model.train()
+
+    criterion = torch.nn.CrossEntropyLoss()
 
     tic = time.perf_counter()
     dl_time = time.perf_counter()
@@ -136,6 +131,14 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
 
         # ============ swav loss ... ============
         # Adapted from https://github.com/facebookresearch/swav/blob/master/main_swav.py
+
+        # optionally starts a queue
+        if args.queue_length > 0 and iteration >= args.iters_queue_starts and queue is None:
+            queue = {}
+
+            queue["vid"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
+            queue["sk"] = torch.zeros(args.queue_length, args.representation_size, requires_grad=True).cuda()
+
         loss = 0
 
         all_vid_proj = repr_vid_proj
@@ -164,40 +167,41 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
                 queue_sk[:batch_size] = repr_sk
 
             # get assignments
-            q_vid = torch.exp(all_vid_proj / args.swav_epsilon).t()
+            q_vid = torch.exp(all_vid_proj / args.sinkhorn_knopp_epsilon).t()
             q_vid = sinkhorn(q_vid, args.sinkhorn_iterations)
             q_vid = q_vid.t()[-batch_size:]
 
-            q_sk = torch.exp(all_sk_proj / args.swav_epsilon).t()
+            q_sk = torch.exp(all_sk_proj / args.sinkhorn_knopp_epsilon).t()
             q_sk = sinkhorn(q_sk, args.sinkhorn_iterations)
             q_sk = q_sk.t()[-batch_size:]
 
         p_vid = torch.nn.functional.softmax(repr_vid_proj / args.swav_temperature, dim=1)
         p_sk = torch.nn.functional.softmax(repr_sk_proj / args.swav_temperature, dim=1)
 
-        loss = torch.zeros(1, device=repr_vid_proj.device)
-
-        loss += torch.mean(torch.sum(-q_vid * torch.log(p_sk) - (1 - q_vid) * torch.log(1 - p_sk), dim=1))  #
-        loss += torch.mean(torch.sum(-q_sk * torch.log(p_vid) - (1 - q_sk) * torch.log(1 - p_vid), dim=1))  #
+        loss += torch.mean(torch.sum(-q_vid * torch.log(p_sk) - (1 - q_vid) * torch.log(1 - p_sk),
+                                     dim=1))
+        loss += torch.mean(torch.sum(-q_sk * torch.log(p_vid) - (1 - q_sk) * torch.log(1 - p_vid),
+                                     dim=1))
 
         loss /= 2
 
-        optimizer.zero_grad()
-
         e_score_time = time.perf_counter()
         tr_stats["time_scoring"].update(e_score_time - s_score_time)
+
         with torch.no_grad():
             calculate_tr_stats(repr_vid, repr_sk, repr_vid_proj, repr_sk_proj, tr_stats)
 
         # Loss Calculation and backward pass.
         s_back_time = time.perf_counter()
 
+        optimizer.zero_grad()
+
         tr_stats["total_loss"].update(loss.item(), batch_size)
 
         loss.backward()
 
         # cancel some gradients
-        if iteration < args.freeze_prototypes_niters:
+        if iteration < args.iters_freeze_prototypes:
             for name, p in model.named_parameters():
                 if "prototypes" in name:
                     p.grad = None
@@ -211,7 +215,7 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
 
         if idx % args.print_freq == 0:
             e_tic = time.perf_counter()
-            write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration)
+            write_stats_swav_iteration(tr_stats, writer_train, iteration)
             print_tr_stats_loc_avg(tr_stats, epoch, idx, len(data_loader), e_tic - tic)
 
         iteration += 1
@@ -221,10 +225,31 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
         all_time = time.perf_counter()
         # Next iteration
 
-    write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch)
+    write_stats_swav_epoch(tr_stats, writer_train, epoch)
     print_tr_stats_timings_avg(tr_stats)
 
     return iteration, tr_stats["total_loss"].avg, tr_stats["cv_proj_sim_m"].avg
+
+
+def sinkhorn(Q, nmb_iters):
+    with torch.no_grad():
+        sum_Q = torch.sum(Q)
+        Q /= sum_Q
+
+        u = torch.zeros(Q.shape[0]).cuda(non_blocking=True)
+        r = torch.ones(Q.shape[0]).cuda(non_blocking=True) / Q.shape[0]  # 1/k
+        c = torch.ones(Q.shape[1]).cuda(non_blocking=True) / Q.shape[1]  # 1/b
+
+        curr_sum = torch.sum(Q, dim=1)
+
+        for it in range(nmb_iters):
+            u = curr_sum
+            Q *= (r / u).unsqueeze(1)
+            Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
+            curr_sum = torch.sum(Q, dim=1)
+
+        Q = (Q / torch.sum(Q, dim=0, keepdim=True)).float()
+        return Q
 
 
 def get_cv_sim_stats(x: torch.Tensor, y: torch.Tensor):
@@ -269,7 +294,7 @@ def calculate_tr_stats(rep_vid: torch.Tensor, rep_sk: torch.Tensor, rep_vid_proj
     tr_stats["cv_proj_rnd_sim_s"].update(cv_proj_rnd_sim_s.item(), batch_size)
 
 
-def write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch):
+def write_stats_swav_epoch(tr_stats, writer_train, epoch):
     writer_train.add_scalars('ep/Losses', {'Training Loss': tr_stats["total_loss"].avg}, epoch)
 
     writer_train.add_scalars('ep/Projection Similarities',
@@ -279,14 +304,22 @@ def write_stats_batch_contrast_epoch(tr_stats, writer_train, epoch):
                               'Rand Projection Similarity (Std)':  tr_stats["cv_proj_rnd_sim_s"].avg,
                               }, epoch)
 
+    rep_sim_dict = {'Representation Similarity (Mean)':      tr_stats["cv_rep_sim_m"].avg,
+                    'Rand Representation Similarity (Mean)': tr_stats["cv_rand_sim_m"].avg,
+                    'Representation Similarity (Std)':       tr_stats["cv_rep_sim_s"].avg,
+                    'Rand Representation Similarity (Std)':  tr_stats["cv_rand_sim_s"].avg,
+                    }
 
-def write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration):
+    writer_train.add_scalars('it/New_Representation_Similarities', rep_sim_dict, epoch)
+
+
+def write_stats_swav_iteration(tr_stats, writer_train, iteration):
     writer_train.add_scalars('it/Train_Loss', {'loss': tr_stats["total_loss"].local_avg}, iteration)
 
-    rep_sim_dict = {'cv_tp_sim_mean':   tr_stats["cv_rep_sim_m"].local_avg,
-                    'cv_rand_sim_mean': tr_stats["cv_rand_sim_m"].local_avg,
-                    'cv_tp_sim_std':    tr_stats["cv_rep_sim_s"].local_avg,
-                    'cv_rnd_sim_std':   tr_stats["cv_rand_sim_s"].local_avg,
+    rep_sim_dict = {'Representation Similarity (Mean)':      tr_stats["cv_rep_sim_m"].local_avg,
+                    'Rand Representation Similarity (Mean)': tr_stats["cv_rand_sim_m"].local_avg,
+                    'Representation Similarity (Std)':       tr_stats["cv_rep_sim_s"].local_avg,
+                    'Rand Representation Similarity (Std)':  tr_stats["cv_rand_sim_s"].local_avg,
                     }
 
     writer_train.add_scalars('it/New_Representation_Similarities', rep_sim_dict, iteration)
@@ -427,24 +460,3 @@ def write_val_stats_avg(val_stats, writer_val, epoch):
                                                      "Cuda Transfer": val_stats["time_cuda_transfer"].avg,
                                                      "Forward Pass":  val_stats["time_forward"].avg,
                                                      "Total":         val_stats["time_all"].avg}, epoch)
-
-
-def sinkhorn(Q, nmb_iters):
-    with torch.no_grad():
-        sum_Q = torch.sum(Q)
-        Q /= sum_Q
-
-        u = torch.zeros(Q.shape[0]).cuda(non_blocking=True)
-        r = torch.ones(Q.shape[0]).cuda(non_blocking=True) / Q.shape[0]  # 1/k
-        c = torch.ones(Q.shape[1]).cuda(non_blocking=True) / Q.shape[1]  # 1/b
-
-        curr_sum = torch.sum(Q, dim=1)
-
-        for it in range(nmb_iters):
-            u = curr_sum
-            Q *= (r / u).unsqueeze(1)
-            Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
-            curr_sum = torch.sum(Q, dim=1)
-
-        Q = (Q / torch.sum(Q, dim=0, keepdim=True)).float()
-        return Q
