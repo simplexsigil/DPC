@@ -308,6 +308,7 @@ def resnet200_2d3d_full(**kwargs):
                    [3, 24, 36, 3], **kwargs)
     return model
 
+
 def neq_load_customized(model, pretrained_dict, ignore_layer=None):
     ''' load pre-trained model in a not-equal way,
     when new model has been partially modified '''

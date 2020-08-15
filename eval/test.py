@@ -18,7 +18,7 @@ from augmentation import *
 from dataset_hmdb51 import HMDB51Dataset
 from dataset_ucf101 import UCF101Dataset
 from model_3d_lc import *
-from utils import AverageMeter, ConfusionMeter, save_checkpoint, write_log, calc_topk_accuracy, calc_accuracy, \
+from utils import AverageMeter, ConfusionMeter, write_log, calc_topk_accuracy, calc_accuracy, \
     write_out_images, write_out_checkpoint
 
 parser = argparse.ArgumentParser()
@@ -36,7 +36,7 @@ parser.add_argument('--sampling_shift', default=None, type=int, help='Limit for 
 parser.add_argument('--max_samples', default=None, type=int, help='Limit for samples.')
 
 parser.add_argument('--seq_len', default=30, type=int)
-parser.add_argument('--ds', default=2, type=int)
+parser.add_argument('--ds_vid', default=2, type=int)
 parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "dpc-resnet", "r2+1d"])
@@ -45,8 +45,11 @@ parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--hidden_width', default=512, type=int)
 parser.add_argument('--num_class', default=51, type=int)
+parser.add_argument('--class_tapping', default=-1, type=int,
+                    help="How many fully connected layers to go back to attach the classification layer.")
 
-parser.add_argument('--lr', default=1e-4, type=float)
+parser.add_argument('--optimizer', default="Adam", choices=["Adam", "SGD"], type=str)
+parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
 parser.add_argument('--fine_tuning', default=0.1, type=float, help='A ratio which determines the learning rate '
                                                                    'for the backbone in relation to lr.'
@@ -143,8 +146,6 @@ def main():
     val_transform = transforms.Compose([
         RandomSizedCrop(consistent=True, size=224, p=0.3),
         Scale(size=(args.img_dim, args.img_dim)),
-        RandomHorizontalFlip(consistent=True),
-        ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3, consistent=True),
         ToTensor(),
         Normalize()
         ])
@@ -409,14 +410,14 @@ def get_data(transform, args, mode='train'):
         dataset = UCF101Dataset(mode=mode,
                                 transform=transform,
                                 seq_len=args.seq_len,
-                                downsample_vid=args.ds,
+                                downsample_vid=args.ds_vid,
                                 which_split=args.split,
                                 max_samples=args.max_samples)
     elif args.dataset == 'hmdb51':
         dataset = HMDB51Dataset(mode=mode,
                                 transform=transform,
                                 seq_len=args.seq_len,
-                                downsample_vid=args.ds,
+                                downsample_vid=args.ds_vid,
                                 which_split=args.split,
                                 max_samples=args.max_samples)
     else:
@@ -517,7 +518,7 @@ def prepare_optimizer(model, args):
     optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
 
     if args.dataset == 'hmdb51':
-        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[150, 250, 300], repeat=1)
+        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[80, 120, 180], repeat=1)
     elif args.dataset == 'ucf101':
         if args.img_dim == 224:
             lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[300, 400, 500], repeat=1)
@@ -533,21 +534,23 @@ def prepare_optimizer(model, args):
 
 def select_model(args):
     if args.model == "dpc-resnet":
-        model = Resnet18Classifier(sample_size=args.img_dim,
-                                   seq_len=args.seq_len,
-                                   network=args.vid_backbone,
-                                   num_class=args.num_class,
-                                   dropout=args.dropout,
-                                   crossm_vector_length=args.representation_size
-                                   )
+        model = DPCResnetClassifier(img_dim=args.img_dim,
+                                    seq_len=args.seq_len,
+                                    downsampling=args.ds_vid,
+                                    vid_backbone=args.vid_backbone,
+                                    num_class=args.num_class,
+                                    dropout=args.dropout,
+                                    representation_size=args.representation_size,
+                                    hidden_width=args.hidden_width,
+                                    classification_tapping=args.class_tapping
+                                    )
     elif args.model == "r2+1d":
-        model = R2plus1DClassifier(sample_size=args.img_dim,
-                                   seq_len=args.seq_len,
-                                   backbone=args.vid_backbone,
+        model = R2plus1DClassifier(backbone=args.vid_backbone,
                                    num_class=args.num_class,
                                    dropout=args.dropout,
                                    representation_size=args.representation_size,
-                                   hidden_fc_width=args.hidden_width
+                                   hidden_fc_width=args.hidden_width,
+                                   classification_tapping=args.class_tapping
                                    )
     else:
         raise ValueError('wrong model!')
@@ -580,7 +583,7 @@ def prepare_cuda(args):
 
 def test_only(model, args):
     if os.path.isfile(args.test):
-        ('\n==========Testing Model===========')
+        print('\n==========Testing Model===========')
         print("Loading testing checkpoint '{}'".format(args.test))
         checkpoint = torch.load(args.test)
 

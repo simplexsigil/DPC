@@ -136,3 +136,17 @@ def pairwise_scores(x: torch.Tensor,
 
     else:
         raise (ValueError('Unsupported similarity function'))
+
+
+# bsz : batch size (number of positive pairs) # d : latent dim # x : Tensor, shape=[bsz, d]
+# latents for one side of positive pairs
+# y : Tensor, shape=[bsz, d]
+# latents for the other side of positive pairs
+# lam : hyperparameter balancing the two losses
+def lalign(x, y, alpha=2):
+    return (x - y).norm(dim=1).pow(alpha).mean()
+
+
+def lunif(x, t=2):
+    sq_pdist = torch.pdist(x, p=2).pow(2)
+    return sq_pdist.mul(-t).exp().mean().log()

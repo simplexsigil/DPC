@@ -12,43 +12,82 @@ import torch.nn.functional as F
 import torchvision
 
 
-class Resnet18Classifier(nn.Module):
-    def __init__(self, sample_size, seq_len, network='dpc-resnet18', dropout=0.5, num_class=101,
-                 crossm_vector_length=512):
-        super(Resnet18Classifier, self).__init__()
+class DPCResnetClassifier(nn.Module):
+    def __init__(self,
+                 img_dim,
+                 seq_len=30,
+                 downsampling=1,
+                 vid_backbone='resnet18',
+                 representation_size=512,
+                 hidden_width=512,
+                 num_class=101,
+                 dropout=0.5,
+                 classification_tapping=0):
+        super(DPCResnetClassifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
         torch.cuda.manual_seed(666)
-        self.sample_size = sample_size
-        self.seq_len = seq_len
-        self.num_class = num_class
-        self.crossm_vector_length = crossm_vector_length
 
-        self.last_duration = int(math.ceil(seq_len / 4))
-        self.last_size = int(math.ceil(sample_size / 32))
+        print("============Model================")
+        print('Using DPCResnet Classifier model.')
+
+        self.img_dim = img_dim
+        self.seq_len = seq_len // downsampling
+        self.representation_size = representation_size
+        self.vid_backbone_name = vid_backbone
+        self.hidden_width = hidden_width
+        self.classification_tapping = classification_tapping
+
+        self.num_class = num_class
+
+        self.last_duration = int(math.ceil(self.seq_len / 4))  # This is the sequence length after using the backbone
+        self.last_size = int(math.ceil(self.img_dim / 32))  # Final feature map has size (last_size, last_size)
+
         track_running_stats = True
 
-        self.backbone, self.param = select_resnet(network, track_running_stats=track_running_stats)
+        self.vid_backbone, self.param = select_resnet(self.vid_backbone_name, track_running_stats=track_running_stats)
 
-        self.dpc_feature_conversion = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(4096, self.crossm_vector_length),
-            )
+        if classification_tapping > -3:
+            self.vid_fc1 = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(4096, self.hidden_width),
+                )
 
-        self.final_bn_ev = nn.BatchNorm1d(self.crossm_vector_length)
-        self.final_bn_ev.weight.data.fill_(1)
-        self.final_bn_ev.bias.data.zero_()
+            _initialize_weights(self.vid_fc1)
 
-        self.final_fc = nn.Sequential(
+        if classification_tapping > -2:
+            self.vid_fc2 = nn.Sequential(
+                nn.BatchNorm1d(self.hidden_width),
+                nn.ReLU(),
+                nn.Linear(self.hidden_width, self.hidden_width),
+                )
+
+            _initialize_weights(self.vid_fc2)
+
+        if classification_tapping > -1:
+            self.vid_fc_rep = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(self.hidden_width, self.representation_size),
+                )
+
+            _initialize_weights(self.vid_fc_rep)
+
+        if -3 < classification_tapping < 0:
+            in_size_classifier = self.hidden_width
+        elif classification_tapping < -3:
+            in_size_classifier = 4096
+        else:
+            in_size_classifier = self.representation_size
+
+        self.final_fc_classifier = nn.Sequential(
             nn.Dropout(dropout),
-            #nn.ReLU(),
-            #nn.Linear(self.crossm_vector_length, self.crossm_vector_length),
             nn.ReLU(),
-            nn.Linear(self.crossm_vector_length, self.num_class)
+            nn.Linear(in_size_classifier, self.num_class)
             )
 
-        self._initialize_weights(self.dpc_feature_conversion)
-        self._initialize_weights(self.final_fc)
+        _initialize_weights(self.final_fc_classifier)
+
+        print("=================================")
 
     def forward(self, block):
         # block: [B, N, C, SL, W, H] Batch, Num Seq, Channels, Seq Len, Width Height
@@ -56,7 +95,7 @@ class Resnet18Classifier(nn.Module):
         (B, C, SL, H, W) = block.shape
 
         # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
-        feature = self.backbone(block)  # (B * N, 256, 2, 4, 4)
+        feature = self.vid_backbone(block)  # (B * N, 256, 2, 4, 4)
         del block
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
@@ -64,43 +103,37 @@ class Resnet18Classifier(nn.Module):
         feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
         feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
-        feature = self.dpc_feature_conversion(feature)
+        if self.classification_tapping > -3:
+            feature = self.vid_fc1(feature)
+        if self.classification_tapping > -2:
+            feature = self.vid_fc2(feature)
+        if self.classification_tapping > -1:
+            feature = self.vid_fc_rep(feature)
 
-        # [B,N,C] -> [B,C,N] -> BN() -> [B,N,C], because BN operates on id=1 channel.
-        feature = self.final_bn_ev(feature)
-        output = self.final_fc(feature).view(B, self.num_class)
+        output = self.final_fc_classifier(feature).view(B, self.num_class)
 
         return output
 
-    def _initialize_weights(self, module):
-        for name, param in module.named_parameters():
-            if 'bias' in name:
-                nn.init.constant_(param, 0.0)
-            elif 'weight' in name:
-                nn.init.orthogonal_(param, 1)
-                # other resnet weights have been initialized in resnet_3d.py
-
     def load_weights_state_dict(self, state_dict, model=None):
-        neq_load_customized((self if model is None else model), state_dict, ignore_layer=".*module.final_bn.*")
+        neq_load_customized((self if model is None else model), state_dict)
 
 
 class R2plus1DClassifier(nn.Module):
-    def __init__(self, sample_size,
-                 seq_len,
+    def __init__(self,
                  backbone='r2+1d18',
                  dropout=0.5,
                  num_class=101,
                  representation_size=512,
-                 hidden_fc_width=512):
+                 hidden_fc_width=512,
+                 classification_tapping=0):
         super(R2plus1DClassifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
         torch.cuda.manual_seed(666)
-        self.sample_size = sample_size  # TODO: Remove if not required.
-        self.seq_len = seq_len
         self.num_class = num_class
         self.representation_size = representation_size
         self.hidden_width = hidden_fc_width
+        self.classification_tapping = classification_tapping
 
         if "r2+1d" in backbone:
             if backbone == "r2+1d18":
@@ -109,37 +142,50 @@ class R2plus1DClassifier(nn.Module):
                 raise ValueError
 
         # The first linear layer is part of the R(2+1)D architecture
-        self.vid_fc2 = nn.Sequential(
-            nn.BatchNorm1d(self.hidden_width),
-            nn.ReLU(),
-            nn.Linear(self.hidden_width, self.hidden_width),
-        )
+        if classification_tapping > -2:
+            self.vid_fc2 = nn.Sequential(
+                nn.BatchNorm1d(self.hidden_width),
+                nn.ReLU(),
+                nn.Linear(self.hidden_width, self.hidden_width),
+                )
 
-        self.vid_fc_rep = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(self.hidden_width, self.representation_size),
-        )
+            R2plus1DClassifier._initialize_weights(self.vid_fc2)
 
-        self.final_fc = nn.Sequential(
+        if classification_tapping > -1:
+            self.vid_fc_rep = nn.Sequential(
+                nn.ReLU(),
+                nn.Linear(self.hidden_width, self.representation_size),
+                )
+
+            R2plus1DClassifier._initialize_weights(self.vid_fc_rep)
+
+        if -3 < classification_tapping < 0:
+            in_size_classifier = self.hidden_width
+        elif classification_tapping < -3:
+            in_size_classifier = 4096
+        else:
+            in_size_classifier = self.representation_size
+
+        self.final_fc_classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.ReLU(),
-            nn.Linear(self.representation_size, self.num_class)
+            nn.Linear(in_size_classifier, self.num_class)
             )
 
-        R2plus1DClassifier._initialize_weights(self.vid_fc2)
-        R2plus1DClassifier._initialize_weights(self.vid_fc_rep)
-        R2plus1DClassifier._initialize_weights(self.final_fc)
+        R2plus1DClassifier._initialize_weights(self.final_fc_classifier)
 
     def forward(self, block):
         (B, C, SL, H, W) = block.shape  # block: [B, C, SL, W, H] Batch, Channels, Seq Len, Width Height
 
         feature = self.vid_backbone(block)
         del block
-        feature = self.vid_fc2(feature)
 
-        feature = self.vid_fc_rep(feature)
+        if self.classification_tapping > -2:
+            feature = self.vid_fc2(feature)
+        if self.classification_tapping > -1:
+            feature = self.vid_fc_rep(feature)
 
-        output = self.final_fc(feature).view(B, self.num_class)
+        output = self.final_fc_classifier(feature).view(B, self.num_class)
 
         return output
 
@@ -160,3 +206,11 @@ class R2plus1DClassifier(nn.Module):
 
     def load_weights_state_dict(self, state_dict, model=None):
         neq_load_customized((self if model is None else model), state_dict)
+
+
+def _initialize_weights(module):
+    for name, param in module.named_parameters():
+        if 'bias' in name:
+            nn.init.constant_(param, 0.0)
+        elif 'weight' in name and len(param.shape) > 1:
+            nn.init.orthogonal_(param, 1)

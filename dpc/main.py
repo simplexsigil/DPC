@@ -11,6 +11,7 @@ except ImportError as e:
     pass  # module doesn't exist, deal with it.
 
 from tensorboardX import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, '../utils')
 sys.path.insert(0, '../backbone')
@@ -73,6 +74,8 @@ parser.add_argument("--start_warmup", default=0, type=float,
                     help="initial warmup learning rate")
 
 parser.add_argument('--print_freq', default=5, type=int, help='frequency of printing output during training')
+parser.add_argument('--hist_freq', default=10, type=int, help='frequency of histogram generation during training')
+
 parser.add_argument('--no_cache', action='store_true', default=False, help='Avoid using cached data.')
 
 parser.add_argument('--save_best_val_loss', type=bool, default=False, help='Save model with best Val Loss.')

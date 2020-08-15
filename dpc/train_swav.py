@@ -75,9 +75,6 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
 
     model.train()
 
-    criterion = torch.nn.CrossEntropyLoss()
-
-    tic = time.perf_counter()
     dl_time = time.perf_counter()
     all_time = time.perf_counter()
 
@@ -214,13 +211,11 @@ def train_skvid_swav(data_loader, model, optimizer, lr_schedule, epoch, iteratio
         tr_stats["time_all"].update(time.perf_counter() - all_time)
 
         if idx % args.print_freq == 0:
-            e_tic = time.perf_counter()
             write_stats_swav_iteration(tr_stats, writer_train, iteration)
-            print_tr_stats_loc_avg(tr_stats, epoch, idx, len(data_loader), e_tic - tic)
+            print_tr_stats_loc_avg(tr_stats, epoch, idx, len(data_loader), tr_stats["time_all"].local_avg)
 
         iteration += 1
 
-        tic = time.perf_counter()
         dl_time = time.perf_counter()
         all_time = time.perf_counter()
         # Next iteration
@@ -460,3 +455,5 @@ def write_val_stats_avg(val_stats, writer_val, epoch):
                                                      "Cuda Transfer": val_stats["time_cuda_transfer"].avg,
                                                      "Forward Pass":  val_stats["time_forward"].avg,
                                                      "Total":         val_stats["time_all"].avg}, epoch)
+
+    # writer_val.add_embedding(val_stats["reps"].numpy(), tag="ep/Validation Representations", global_step=epoch)
