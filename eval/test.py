@@ -191,8 +191,24 @@ def main():
 
     print('Training from ep %d to ep %d finished' % (args.start_epoch, args.epochs))
 
-    args.test = os.path.join(args.model_path, "model_best.pth.tar")
+    args.test = os.path.join(args.model_path, "model_last.pth.tar")
     test_only(model, args)
+
+    if args.save_best_val_acc:
+        args.test = os.path.join(args.model_path, "model_best_val_acc.pth.tar")
+        test_only(model, args)
+
+    if args.save_best_val_loss:
+        args.test = os.path.join(args.model_path, "model_best_val_loss.pth.tar")
+        test_only(model, args)
+
+    if args.save_best_train_acc:
+        args.test = os.path.join(args.model_path, "model_best_train_acc.pth.tar")
+        test_only(model, args)
+
+    if args.save_best_train_loss:
+        args.test = os.path.join(args.model_path, "model_best_train_loss.pth.tar")
+        test_only(model, args)
 
 
 def train(data_loader, model, optimizer, epoch, args):
