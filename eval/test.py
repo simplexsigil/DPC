@@ -41,6 +41,7 @@ parser.add_argument('--img_dim', default=224, type=int)
 
 parser.add_argument('--model', default='r2+1d', type=str, choices=["resnet", "dpc-resnet", "r2+1d"])
 parser.add_argument('--vid_backbone', default='r2+1d18', type=str, choices=['r2+1d18', 'resnet18'])
+parser.add_argument('--backbone_naming', default='vid_backbone', type=str, choices=['vid_backbone', 'backbone'])
 parser.add_argument('--dropout', default=0.5, type=float)
 parser.add_argument('--representation_size', default=512, type=int)
 parser.add_argument('--hidden_width', default=512, type=int)
@@ -49,6 +50,7 @@ parser.add_argument('--class_tapping', default=-1, type=int,
                     help="How many fully connected layers to go back to attach the classification layer.")
 
 parser.add_argument('--optimizer', default="Adam", choices=["Adam", "SGD"], type=str)
+parser.add_argument('--scheduler_steps', default=[50, 80, 100, 120, 180], type=int, nargs="+")
 parser.add_argument('--lr', default=1e-3, type=float)
 parser.add_argument('--wd', default=1e-3, type=float, help='weight decay')
 parser.add_argument('--fine_tuning', default=0.1, type=float, help='A ratio which determines the learning rate '
@@ -326,7 +328,7 @@ def test(data_loader, model, num_epoch):
             target = target.to(cuda_dev)
             (batch_size, C, T, W, H) = input_seq.shape
 
-            seq_len_ds = args.seq_len // args.ds + (1 if args.seq_len % args.ds != 0 else 0)
+            seq_len_ds = args.seq_len // args.ds_vid + (1 if args.seq_len % args.ds_vid != 0 else 0)
 
             input_seq = input_seq.reshape((batch_size, C, -1, seq_len_ds, W, H))
             input_seq = input_seq.transpose(1, 2)
@@ -518,12 +520,12 @@ def prepare_optimizer(model, args):
     optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
 
     if args.dataset == 'hmdb51':
-        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[80, 120, 180], repeat=1)
+        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
     elif args.dataset == 'ucf101':
         if args.img_dim == 224:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[300, 400, 500], repeat=1)
+            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
         else:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=[60, 80, 100], repeat=1)
+            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
     else:
         raise ValueError
 
@@ -542,7 +544,8 @@ def select_model(args):
                                     dropout=args.dropout,
                                     representation_size=args.representation_size,
                                     hidden_width=args.hidden_width,
-                                    classification_tapping=args.class_tapping
+                                    classification_tapping=args.class_tapping,
+                                    backbone_naming=args.backbone_naming
                                     )
     elif args.model == "r2+1d":
         model = R2plus1DClassifier(backbone=args.vid_backbone,

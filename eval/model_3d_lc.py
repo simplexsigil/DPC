@@ -22,7 +22,8 @@ class DPCResnetClassifier(nn.Module):
                  hidden_width=512,
                  num_class=101,
                  dropout=0.5,
-                 classification_tapping=0):
+                 classification_tapping=0,
+                 backbone_naming="vid_backbone"):
         super(DPCResnetClassifier, self).__init__()
 
         # noinspection PyUnresolvedReferences
@@ -37,6 +38,7 @@ class DPCResnetClassifier(nn.Module):
         self.vid_backbone_name = vid_backbone
         self.hidden_width = hidden_width
         self.classification_tapping = classification_tapping
+        self.backbone_naming = backbone_naming
 
         self.num_class = num_class
 
@@ -45,7 +47,11 @@ class DPCResnetClassifier(nn.Module):
 
         track_running_stats = True
 
-        self.vid_backbone, self.param = select_resnet(self.vid_backbone_name, track_running_stats=track_running_stats)
+        if self.backbone_naming == "vid_backbone":
+            self.vid_backbone, self.param = select_resnet(self.vid_backbone_name,
+                                                          track_running_stats=track_running_stats)
+        elif self.backbone_naming == "backbone":
+            self.backbone, self.param = select_resnet(self.vid_backbone_name, track_running_stats=track_running_stats)
 
         if classification_tapping > -3:
             self.vid_fc1 = nn.Sequential(
@@ -95,7 +101,11 @@ class DPCResnetClassifier(nn.Module):
         (B, C, SL, H, W) = block.shape
 
         # For the backbone, first dimension is the batch size -> Blocks are calculated separately.
-        feature = self.vid_backbone(block)  # (B * N, 256, 2, 4, 4)
+        if self.backbone_naming == "vid_backbone":
+            feature = self.vid_backbone(block)  # (B * N, 256, 2, 4, 4)
+        elif self.backbone_naming == "backbone":
+            feature = self.backbone(block)  # (B * N, 256, 2, 4, 4)
+
         del block
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
