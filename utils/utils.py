@@ -13,21 +13,19 @@ from augmentation import Denormalize
 plt.switch_backend('agg')
 
 
-def write_out_images(img_seq, writer, iteration, img_dim=224):
+def write_out_images(img_seqs, writer, iteration):
     de_normalize = Denormalize()
 
-    if img_seq.shape[0] > 2:
-        out_seq = img_seq[0:2, :]
-    else:
-        out_seq = img_seq
+    for i, img_seq in enumerate(img_seqs):
+        out_seq = img_seq[:1, :]
+        # B, C, Sqlen, H, W
+        img_dim = out_seq.shape[-1]
 
-    # B, C, Sqlen, H, W
+        img_grid = vutils.make_grid(out_seq.transpose(1, 2).contiguous().view(-1, 3, img_dim, img_dim),
+                                    nrow=out_seq.shape[0])
+        de_norm_imgs = de_normalize.denormalize(img_grid)
 
-    img_grid = vutils.make_grid(out_seq.transpose(1, 2).contiguous().view(-1, 3, img_dim, img_dim),
-                                nrow=img_seq.shape[0])
-    de_norm_imgs = de_normalize.denormalize(img_grid)
-
-    writer.add_image('input_seq', de_norm_imgs, iteration)
+        writer.add_image(f'input_seq_{i}', de_norm_imgs, iteration)
 
 
 def save_checkpoint(state, model_name="model_last.pth.tar", model_path='models'):

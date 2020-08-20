@@ -1,5 +1,6 @@
 import math
 import sys
+from typing import List
 
 import torch
 import torch.nn as nn
@@ -464,9 +465,7 @@ class SkeleContrastDPCResnet(nn.Module):
         print("=================================")
 
     def _forward_sk(self, block_sk):
-        (Ba, Bo, C, T, J) = block_sk.shape
-
-        block_sk = block_sk.view(Ba * Bo, C, T, J)  # Forward each block individually like a batch input.
+        (Ba, C, T, J) = block_sk.shape
 
         features = self.sk_backbone(block_sk)
         features = self.sk_fc_rep(features)
@@ -487,7 +486,10 @@ class SkeleContrastDPCResnet(nn.Module):
 
         # Performs average pooling on the sequence length after the backbone -> averaging over time.
         feature = F.avg_pool3d(feature, (self.last_duration, 1, 1), stride=(1, 1, 1))
-        feature = feature.view(B, self.param['feature_size'], self.last_size, self.last_size)
+
+        last_size = int(math.ceil(H / 32))
+
+        feature = feature.view(B, self.param['feature_size'], last_size, last_size)
 
         feature = torch.flatten(feature, start_dim=1, end_dim=-1)
 
@@ -499,30 +501,35 @@ class SkeleContrastDPCResnet(nn.Module):
 
         return feature
 
-    def forward(self, block_rgb, block_sk):
+    def forward(self, block_rgbs, block_sk):
         # block_rgb: (B, C, SL, W, H) Batch, Channels, Seq Len, Height, Width
-        # block_sk: (Ba, Bo, C, T, J) Batch, Bodies, Channels, Timestep, Joint
+        # block_sk: (Ba, C, T, J) Batch, Bodies, Channels, Timestep, Joint
+
+        if not isinstance(block_rgbs, List):
+            block_rgbs = [block_rgbs]
 
         if self.debug:
-            SkeleContrastDPCResnet.check_inputs(block_rgb, block_sk)
+            pass
+            # TODO: Adapt for list of images.
+            # SkeleContrastDPCResnet.check_inputs(block_rgbs, block_sk)
 
-        bs = block_rgb.shape[0]
+        bs = block_rgbs[0].shape[0]
 
-        pred_rgb = self._forward_rgb(block_rgb)
+        pred_rgbs = [self._forward_rgb(block_rgb) for block_rgb in block_rgbs]
         pred_sk = self._forward_sk(block_sk)
 
-        pred_rgb = pred_rgb.contiguous()
+        pred_rgbs = [pred_rgb.contiguous() for pred_rgb in pred_rgbs]
         pred_sk = pred_sk.contiguous()
 
-        pred_rgb = torch.nn.functional.normalize(pred_rgb)
+        pred_rgbs = [torch.nn.functional.normalize(pred_rgb) for pred_rgb in pred_rgbs]
         pred_sk = torch.nn.functional.normalize(pred_sk)
 
         if self.swav_prototype_count is not None and self.swav_prototype_count > 0:
-            pred_rgb_proj = self.prototypes(pred_rgb)  # torch.nn.functional.normalize(self.prototypes(pred_rgb))
-            pred_sk_proj = self.prototypes(pred_sk)  # torch.nn.functional.normalize(self.prototypes(pred_sk))
+            pred_rgb_projs = [self.prototypes(pred_rgb) for pred_rgb in pred_rgbs]
+            pred_sk_projs = self.prototypes(pred_sk)
 
-            return pred_rgb, pred_sk, pred_rgb_proj, pred_sk_proj
-        return pred_rgb, pred_sk
+            return pred_rgbs, pred_sk, pred_rgb_projs, pred_sk_projs
+        return pred_rgbs, pred_sk
 
     @staticmethod
     def check_inputs(block_rgb, block_sk, mem_vid=None, mem_sk=None):

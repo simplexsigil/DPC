@@ -16,7 +16,8 @@ from dataset import DatasetUtils
 class Kinetics400Dataset(data.Dataset):
     def __init__(self,
                  split='train',
-                 transform=None,
+                 multi_transforms=None,
+                 time_shifts=None,
                  seq_len=30,
                  downsample_vid=1,
                  return_label=False,
@@ -29,10 +30,12 @@ class Kinetics400Dataset(data.Dataset):
                  use_cache=False,
                  cache_folder="cache",
                  sampling_shift=60,
-                 random_state=42):
+                 random_state=42, ):
         self.split = split
         self.split_mode = split_mode
-        self.transform = transform
+        self.multi_transforms = multi_transforms
+        self.time_shifts = time_shifts
+        self.time_span = 0 if self.time_shifts is None else max(self.time_shifts) - min(self.time_shifts)
         self.seq_len = seq_len
         self.downsample_vid = downsample_vid
         self.return_label = return_label
@@ -40,6 +43,8 @@ class Kinetics400Dataset(data.Dataset):
         self.use_skeleton = skele_motion_root is not None
 
         self.sampling_shift = sampling_shift
+
+        assert self.time_shifts is None or len(self.time_shifts) == len(self.multi_transforms)
 
         tqdm.pandas(mininterval=0.5)
 
@@ -59,11 +64,11 @@ class Kinetics400Dataset(data.Dataset):
         start_time = time.perf_counter()
 
         sample_count = len(self.sample_info)
-        self.sample_info = kdu.filter_too_short(self.sample_info, self.seq_len)
+        self.sample_info = kdu.filter_too_short(self.sample_info, self.seq_len + self.time_span)
         stop_time = time.perf_counter()
 
         print("Dropped {} of {} video samples due to insufficient rgb video length ({} frames needed) ({} s).".format(
-            sample_count - len(self.sample_info), sample_count, self.seq_len, stop_time - start_time))
+            sample_count - len(self.sample_info), sample_count, self.seq_len + self.time_span, stop_time - start_time))
 
         sample_count = len(self.sample_info)
         start_time = time.perf_counter()
@@ -134,13 +139,13 @@ class Kinetics400Dataset(data.Dataset):
 
         sample = self.sample_info.iloc[index]
 
-        t_seq = None
-        sk_seq = None
+        t_seqs = None
+        sk_seqs = None
 
         v_len = sample["frame_count"]
 
         if self.use_skeleton:
-            sk_seq, skeleton_frame_count = kdu.load_skeleton_seqs(self.sk_info, sample["id"])
+            sk_seqs, skeleton_frame_count = kdu.load_skeleton_seqs(self.sk_info, sample["id"])
 
             # This is because with kinetics, it is not certain to have all sk data.
             v_len = min(v_len, skeleton_frame_count)
@@ -148,48 +153,56 @@ class Kinetics400Dataset(data.Dataset):
         st_frame = sample["start_frame"] if "start_frame" in sample.index else None
 
         frame_indices = kdu.idx_sampler(v_len, self.seq_len, sample["path"],
-                                        self.sampling_shift, st_frame)
+                                        self.sampling_shift, st_frame, multi_time_shifts=self.time_shifts)
 
-        frame_indices_vid = frame_indices[::self.downsample_vid]
+        frame_indices_vid = [idxs[::self.downsample_vid] for idxs in frame_indices]
 
         file_name_template = sample["file_name"] + "_{:04}.jpg"  # example: '9MHv2sl-gxs_000007_000017'
 
-        seq = [kdu.pil_loader(os.path.join(sample["path"], file_name_template.format(i + 1))) for i in
-               frame_indices_vid]
+        # TODO: If sequences are overlapping, we could save IO time by only loading images once.
+        seq_vids = [[kdu.pil_loader(os.path.join(sample["path"], file_name_template.format(i + 1))) for i in
+                     idxs] for idxs in frame_indices_vid]
 
-        t_seq = self.transform(seq)  # apply same transform
+        t_seqs = [trans(seq_vid) for trans, seq_vid in zip(self.multi_transforms, seq_vids)]
 
-        (C, H, W) = t_seq[0].size()
-
-        # One Tensor of shape (self.num_seq * self.seq_len, C, H, W)
-        t_seq = torch.stack(t_seq, 0)
-
-        # One Tensor of shape (C, self.seq_len, H, W)
-        t_seq = t_seq.transpose(0, 1)
+        # Tensors of shape (self.num_seq * self.seq_len, C, H, W)
+        # Tensors of shape (C, self.seq_len, H, W)
+        t_seqs = [torch.stack(t_seq, 0).transpose(0, 1) for t_seq in t_seqs]
 
         if self.use_skeleton:
-            sk_seq = kdu.select_skeleton_seqs(sk_seq, frame_indices)
-            sk_seq = torch.tensor(sk_seq, dtype=torch.float)
+            sk_seqs = kdu.select_skeleton_seqs(sk_seqs, frame_indices[0])
+
+            sk_seqs = torch.tensor(sk_seqs, dtype=torch.float)
+
+            # Filter out bodys which do not appear in this sequence:
+            zero_seq = torch.all(sk_seqs[:, :, :, 3:] == 0, dim=3)  # Checking if mag is zero.
+            zero_seq = zero_seq.view(sk_seqs.shape[0], -1)
+            zero_seq = zero_seq.all(dim=1)
+
+            if torch.any(zero_seq):
+                if not torch.all(zero_seq):
+                    sk_seqs = sk_seqs[torch.logical_not(zero_seq)]
+                else:
+                    sk_seqs = sk_seqs[:1]
 
             # The skeleton image connsists of joint values over time. H = Joints, W = Time steps (num_seq * seq_len).
-            (sk_Bo, sk_J, sk_T, sk_C) = sk_seq.shape
+            # (sk_J, sk_T, sk_C) = sk_seqs[0].shape
 
-            # This is transposed, so we can split the image into blocks during training.
-            sk_seq = sk_seq.transpose(1, 2)
-            sk_seq = sk_seq.transpose(2, 3).transpose(1, 2)  # (sk_Bo, C, T, J)
+            sk_seqs = sk_seqs.transpose(1, 2)  # (Bo, sk_T, sk_J, sk_C)
+            sk_seqs = sk_seqs.transpose(2, 3).transpose(1, 2)  # (Bo, C, T, J)
 
             if self.return_label:
                 label = torch.tensor([sample["action"]], dtype=torch.long)
-                return index, t_seq, sk_seq, label
+                return index, t_seqs, sk_seqs, label
 
             else:
-                return index, t_seq, sk_seq
+                return index, t_seqs, sk_seqs
 
         if self.return_label:
             label = torch.tensor([sample["action"]], dtype=torch.long)
-            return index, t_seq, label
+            return index, t_seqs, label
         else:
-            return index, t_seq
+            return index, t_seqs
 
     def __len__(self):
         return len(self.sample_info)
@@ -316,6 +329,30 @@ class KineticsDatasetUtils(DatasetUtils):
         return kdu.action_dict_decode[action_code] if zero_indexed else kdu.action_dict_decode[action_code - 1]
 
     @staticmethod
+    def kinetics_collate(batch):
+        """Batch is a list of shape (N,D) where D stands for the return values in a single sample
+        and N stands for the batch size.
+        This collation functions converts that to a list of shape (D,N) which is the same behaviour as the default
+        collation function without converting to a torch tensor first.
+        We do not use the default collate function, since it can not handle variable size inputs
+        (As they exist in undecoded images)."""
+        assert len(batch) > 0
+        bs = len(batch)
+
+        # input is index, vid_seqs, <sk_seqs>, <label>
+
+        idxs = [dat[0] for dat in batch]
+
+        vid_sqs = []
+        for i in range(len(batch[0][1])):  # Fixed number of vid sequences per sample
+            bat_seqs = [batch[j][1][i] for j in range(bs)]
+            vid_sqs.append(torch.stack(bat_seqs, dim=0))
+
+        sk_seqs = [dat[2] for dat in batch]
+
+        return idxs, vid_sqs, sk_seqs
+
+    @staticmethod
     def read_video_info(video_info_csv, extract_infos=True, max_samples=None, worker_count=None,
                         random_state=42) -> pd.DataFrame:
         kdu = KineticsDatasetUtils
@@ -400,13 +437,19 @@ class KineticsDatasetUtils(DatasetUtils):
 
     @staticmethod
     def get_skeleton_length(path):
-        sk_seq = np.load(path)
+        try:
+            sk_seq = np.load(path)
 
-        sk_seq = sk_seq['arr_0']
+            sk_seq = sk_seq['arr_0']
 
-        (J, T, C) = sk_seq.shape
+            (J, T, C) = sk_seq.shape
 
-        return T
+            return T
+        except BaseException as e:
+            print(e)
+            print(path)
+
+            return 0
 
     @staticmethod
     def df_get_skeleton_length(df: pd.DataFrame):

@@ -87,7 +87,7 @@ class HMDB51Dataset(data.Dataset):
         vpath, vlen = self.video_info.iloc[index]
 
         if self.mode == "train" or self.mode == "val":
-            frame_idxs = dsu.idx_sampler(vlen, self.seq_len, vpath)
+            frame_idxs = dsu.idx_sampler(vlen, self.seq_len, vpath)[0]
             frame_idxs_vid = frame_idxs[::self.downsample_vid]
         elif self.mode == "test":
             # Choose 10 samples.

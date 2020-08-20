@@ -1,13 +1,15 @@
+import sys
 import time
 
+import numpy as np
 import torch
 
 import loss_functions
 
-import sys
 sys.path.insert(0, '../utils')
 
 from utils import AverageMeter, calc_topk_accuracy, write_out_images, write_out_checkpoint
+
 
 def training_loop(model, optimizer, criterion, train_loader, val_loader, writer_train, writer_val, args, cuda_device):
     iteration = args.start_iteration
@@ -69,21 +71,24 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
     all_time = time.perf_counter()
 
     for idx, out in enumerate(data_loader):
-        bat_idxs, vid_seq, sk_seq = out
+        bat_idxs, vid_seqs, sk_seqs = out
 
-        batch_size = vid_seq.size(0)
+        batch_size = len(bat_idxs)
+
+        body_counts = [sk_seq.shape[0] for sk_seq in sk_seqs]
+        sk_seqs = torch.cat(sk_seqs, dim=0)  # This way body seqs are forwarded like batch samples.
 
         tr_stats["time_data_loading"].update(time.perf_counter() - dl_time)
 
         # Visualize images for tensorboard.
-        if iteration == 0:
-            write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
+        if iteration == 0 or iteration == args.print_freq:
+            write_out_images(vid_seqs, writer_train, iteration)
 
         # Cuda Transfer
         s_cud_time = time.perf_counter()
 
-        vid_seq = vid_seq.to(cuda_device)
-        sk_seq = sk_seq.to(cuda_device)
+        vid_seqs = [vid_seq.to(cuda_device) for vid_seq in vid_seqs]
+        sk_seqs = sk_seqs.to(cuda_device)
 
         e_cud_time = time.perf_counter()
         tr_stats["time_cuda_transfer"].update(e_cud_time - s_cud_time)
@@ -91,7 +96,9 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         # Forward pass: Calculation
         s_forw_time = time.perf_counter()
 
-        repr_vid, repr_sk = model(vid_seq, sk_seq)
+        repr_vids, repr_sks = model(vid_seqs, sk_seqs)
+
+        repr_vid = torch.cat(repr_vids, dim=0)
 
         e_forw_time = time.perf_counter()
         tr_stats["time_forward"].update(e_forw_time - s_forw_time)
@@ -99,16 +106,19 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         # Scoring
         s_score_time = time.perf_counter()
 
-        score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function,
+        score = loss_functions.pairwise_scores(x=repr_sks, y=repr_vid, matching_fn=args.score_function,
                                                temp_tao=args.temperature)
 
-        targets = list(range(len(score)))
+        targets = [i for i in range(batch_size) for _ in range(body_counts[i])]
+
         targets = torch.tensor(targets, requires_grad=False, dtype=torch.long).to(repr_vid.device)
 
         e_score_time = time.perf_counter()
         tr_stats["time_scoring"].update(e_score_time - s_score_time)
 
-        calculate_tr_stats(repr_vid, repr_sk, tr_stats)
+        first_body_idxs = np.cumsum([0] + body_counts[:-1])
+        first_bodies = repr_sks[first_body_idxs]
+        calculate_tr_stats(repr_vid[:batch_size], first_bodies, tr_stats)
 
         # Calculate Accuracies
         top1, top3, top5 = calc_topk_accuracy(score, targets, (1, min(3, batch_size), min(5, batch_size)))
@@ -260,11 +270,15 @@ def validate(data_loader, model, criterion, cuda_device, epoch, args, writer_val
 
     with torch.no_grad():
         for idx, out in enumerate(data_loader):
-            bat_idx, vid_seq, sk_seq = out
+            bat_idx, vid_seqs, sk_seqs = out
+
+            body_counts = [sk_seq.shape[0] for sk_seq in sk_seqs]
+            sk_seqs = torch.cat(sk_seqs, dim=0)  # This way body seqs are forwarded like batch samples.
 
             val_stats["time_data_loading"].update(time.perf_counter() - start_time)
             start_time = time.perf_counter()
 
+            vid_seq = vid_seqs[0]
             vid_seq = vid_seq.to(cuda_device)
 
             val_stats["time_cuda_transfer"].update(time.perf_counter() - start_time)
@@ -272,16 +286,19 @@ def validate(data_loader, model, criterion, cuda_device, epoch, args, writer_val
 
             batch_size = vid_seq.size(0)
 
-            repr_vid, repr_sk = model(vid_seq, sk_seq)
+            repr_vid, repr_sk = model(vid_seq, sk_seqs)
+
+            repr_vid = repr_vid[0]
 
             val_stats["time_forward"].update(time.perf_counter() - start_time)
 
             score = loss_functions.pairwise_scores(x=repr_sk, y=repr_vid, matching_fn=args.score_function,
                                                    temp_tao=args.temperature)
 
-            del vid_seq, sk_seq
+            del vid_seq, sk_seqs
 
-            targets = list(range(len(score)))
+            targets = [i for i in range(batch_size) for _ in range(body_counts[i])]
+
             targets = torch.tensor(targets, requires_grad=False, dtype=torch.long).to(repr_vid.device)
 
             loss = criterion(score, targets)

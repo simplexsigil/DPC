@@ -253,7 +253,7 @@ def train(data_loader, model, optimizer, epoch, args):
 
         # Visualize images for tensorboard.
         if iteration == 0:
-            write_out_images(vid_seq, writer_train, iteration, img_dim=args.img_dim)
+            write_out_images(vid_seq, writer_train, iteration)
 
         start_time = time.perf_counter()  # Timing calculation
 
@@ -535,15 +535,7 @@ def prepare_optimizer(model, args):
 
     optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
 
-    if args.dataset == 'hmdb51':
-        lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
-    elif args.dataset == 'ucf101':
-        if args.img_dim == 224:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
-        else:
-            lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
-    else:
-        raise ValueError
+    lr_lambda = lambda ep: MultiStepLR_Restart_Multiplier(ep, gamma=0.1, step=args.scheduler_steps, repeat=1)
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 

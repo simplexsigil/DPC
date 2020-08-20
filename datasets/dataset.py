@@ -20,8 +20,6 @@ import os
 import re
 
 import pandas as pd
-import torch
-from torch.utils import data
 from tqdm import tqdm
 
 from augmentation import *
@@ -39,30 +37,40 @@ class DatasetUtils:
         return video_info
 
     @staticmethod
-    def idx_sampler(vlen, seq_len, vpath, sample_discretization=None, start_frame=None):
+    def idx_sampler(vlen, seq_len, vpath, sample_discretization=None, start_frame=None, multi_time_shifts=None):
+        shift_span = 0 if multi_time_shifts is None else max(multi_time_shifts) - min(multi_time_shifts)
+
         '''sample index from a video'''
-        if vlen - seq_len < 0:
+        if vlen - (seq_len + shift_span) < 0:
             print("Tried to sample a video which is too short. This should not happen after filtering short videos."
                   "\nVideo path: {}".format(vpath))
             return [None]
 
         # Randomly start anywhere within the video (as long as the remainder is long enough).
+        first_possible_start = 0 if multi_time_shifts is None or min(multi_time_shifts) > 0 else 0 - min(
+            multi_time_shifts)
+        last_possible_start = vlen - (seq_len + shift_span)
         if sample_discretization is None:
-            start_idx = np.random.choice(range(vlen - seq_len)) if vlen - seq_len > 0 else 0
+            starts = list(range(first_possible_start, last_possible_start))
+            start_idx = np.random.choice(starts) if len(starts) > 0 else (
+                0 if min(multi_time_shifts) > 0 else - min(multi_time_shifts))
         else:
             if start_frame is not None:
-                if vlen < start_frame + seq_len:
+                if vlen < start_frame + seq_len + shift_span:
                     print(
                         f"Not all frames were available at position {start_frame}, for limited vlen {vlen} of {vpath}  "
                         f"with discretization {sample_discretization}. Sampling in the middle.")
-                    start_idx = (vlen - seq_len) // 2
+                    start_idx = (vlen - last_possible_start) // 2
                 else:
                     start_idx = start_frame
             else:
-                start_points = (vlen - seq_len) // sample_discretization
+                start_points = (vlen - last_possible_start) // sample_discretization
                 start_idx = np.random.choice(range(start_points) * sample_discretization)
 
-        seq_idxs = start_idx + np.arange(seq_len)
+        if multi_time_shifts is not None:
+            seq_idxs = [start_idx + np.arange(seq_len) + time_shift for time_shift in multi_time_shifts]
+        else:
+            seq_idxs = [start_idx + np.arange(seq_len)]
 
         return seq_idxs
 
@@ -84,8 +92,11 @@ class DatasetUtils:
     @staticmethod
     def filter_by_missing_skeleton_info(sample_info: pd.DataFrame, skeleton_info: pd.DataFrame):
         sk_ids = skeleton_info.index.get_level_values("id")
+        sk_ids = set(sk_ids)
 
-        return sample_info.loc[sample_info.index.isin(sk_ids)]
+        vid_ids = list(sample_info.index.get_level_values("id"))
+        ids = [vid_id for vid_id in vid_ids if vid_id in sk_ids]
+        return sample_info.loc[ids]
 
     @staticmethod
     def load_skeleton_seqs(sk_info: pd.DataFrame, sample_id, only_first_body=True) -> (np.ndarray, int):
@@ -104,7 +115,7 @@ class DatasetUtils:
         sk_seqs_mag = []
         sk_seqs_ori = []
 
-        for body_id in [1] if only_first_body else sorted(sk_body_infos.index.values):
+        for body_id in set(sk_body_infos.index.values):
             sk_seq_mag_path = sk_body_infos.loc[body_id]["caetano_magnitude_path"]
             sk_seq_ori_path = sk_body_infos.loc[body_id]["caetano_orientation_path"]
 
@@ -122,19 +133,33 @@ class DatasetUtils:
             sk_seqs_mag.append(sk_mag)
             sk_seqs_ori.append(sk_ori)
 
-        sk_seqs_mag = np.stack(sk_seqs_mag)
-        sk_seqs_ori = np.stack(sk_seqs_ori)
+        sk_seqs = [np.concatenate((sk_s_ori, sk_s_mag), axis=-1) for sk_s_ori, sk_s_mag in
+                   zip(sk_seqs_ori, sk_seqs_mag)]  # Concatenating on channel dimension.
 
-        sk_seq = np.concatenate((sk_seqs_ori, sk_seqs_mag), axis=-1)  # Concatenating on channel dimension.
+        sk_seqs = np.stack(sk_seqs, axis=0)  # (Bo, J, T, C)
+        is_zero_seqs = [np.all(sk_s_mag == 0) for sk_s_mag in sk_seqs_mag]
 
-        (Bo, J, T, C) = sk_seq.shape
+        if not all(is_zero_seqs):
+            sk_seqs = sk_seqs[np.logical_not(is_zero_seqs)]
+        else:
+            sk_seqs = sk_seqs[:1]
 
+        # sk_seqs_mag = np.stack(sk_seqs_mag)
+        # sk_seqs_ori = np.stack(sk_seqs_ori)
+
+        T = sk_seqs.shape[2]
+
+        sk_seqs = DatasetUtils.check_sk_seq_nan_inf(sk_seqs)
+
+        return sk_seqs, T
+
+    @staticmethod
+    def check_sk_seq_nan_inf(sk_seq):
         if np.isnan(sk_seq).any() or np.isinf(sk_seq).any():
             print("Skeleton sequence for {} contained nan or inf. Converting to 0.".format(sample_id))
-
         sk_seq = np.nan_to_num(sk_seq)
 
-        return sk_seq, T
+        return sk_seq
 
     @staticmethod
     def select_skeleton_seqs(sk_seq, frame_indices):
