@@ -66,7 +66,6 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
 
     model.train()
 
-    tic = time.perf_counter()
     dl_time = time.perf_counter()
     all_time = time.perf_counter()
 
@@ -145,13 +144,11 @@ def train_skvid_batch_contrast(data_loader, model, optimizer, criterion, epoch, 
         tr_stats["time_all"].update(time.perf_counter() - all_time)
 
         if idx % args.print_freq == 0:
-            e_tic = time.perf_counter()
             write_stats_batch_contrast_iteration(tr_stats, writer_train, iteration)
             print_tr_stats_loc_avg(tr_stats, epoch, idx, len(data_loader), tr_stats["time_all"].local_avg)
 
         iteration += 1
 
-        tic = time.perf_counter()
         dl_time = time.perf_counter()
         all_time = time.perf_counter()
         # Next iteration

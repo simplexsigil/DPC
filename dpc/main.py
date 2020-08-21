@@ -147,8 +147,8 @@ parser.add_argument('--aug_value_range', default=[0.4], type=float, nargs='+')
 parser.add_argument('--aug_crop_min_area', default=0.10, type=float)
 parser.add_argument('--aug_crop_max_area', default=1., type=float)
 
-parser.add_argument('--img_dims', default=[128, 128, 128], type=float, nargs='+')
-parser.add_argument('--multi_dims_time_shifts', default=[0, -60, 60], type=float, nargs='+')
+parser.add_argument('--img_dims', default=[128], type=float, nargs='+')
+parser.add_argument('--multi_dims_time_shifts', default=[0], type=float, nargs='+')
 
 
 def argument_checks(args):
